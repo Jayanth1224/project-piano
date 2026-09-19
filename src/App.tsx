@@ -2,6 +2,15 @@ import React, { useEffect, useRef, useState, useCallback } from 'react';
 import { handTracker, HandTrackingResult } from './services/vision/handTracker';
 import { pianoAudio } from './services/audio/pianoAudio';
 import { KeyEngine, KeyState, Point3D, DEFAULT_MIDDLE_C_KEY } from './services/piano/keyEngine';
+import { PIANO_88_KEYS } from './services/piano/pianoModel.ts';
+import { PianoKeyboard } from './components/PianoKeyboard';
+
+const KEYBOARD_CAMERA_BOUNDS = {
+  xMin: 0.04,
+  xMax: 0.96,
+  yMin: 0.58,
+  yMax: 0.88,
+};
 
 export const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
@@ -18,16 +27,49 @@ export const App: React.FC = () => {
   const [keyState, setKeyState] = useState<KeyState>('IDLE');
   const [currentFingertip, setCurrentFingertip] = useState<Point3D | null>(null);
   const [handDetected, setHandDetected] = useState<boolean>(false);
-  const [manualPressed, setManualPressed] = useState<boolean>(false);
+  const [activeSoundingNotes, setActiveSoundingNotes] = useState<string[]>([]);
+  const [lastTriggeredNote, setLastTriggeredNote] = useState<string>('C4');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
-  // Initialize and start Camera & Audio
+  // Note down handler (called by camera, touch, mouse, or QWERTY keyboard)
+  const handleNoteDown = useCallback(async (noteId: string, velocity = 0.85) => {
+    if (!pianoAudio.isReady()) {
+      const status = await pianoAudio.initAudio();
+      setAudioReady(status.isReady);
+    }
+    pianoAudio.triggerNote(noteId, velocity);
+    setLastTriggeredNote(noteId);
+    setActiveSoundingNotes((prev) => (prev.includes(noteId) ? prev : [...prev, noteId]));
+  }, []);
+
+  // Note up handler
+  const handleNoteUp = useCallback((noteId: string) => {
+    pianoAudio.releaseNote(noteId);
+    setActiveSoundingNotes((prev) => prev.filter((n) => n !== noteId));
+  }, []);
+
+  // Preset chord audition helper (tests true polyphony)
+  const playPresetChord = async (notes: string[]) => {
+    if (!pianoAudio.isReady()) {
+      const status = await pianoAudio.initAudio();
+      setAudioReady(status.isReady);
+    }
+    pianoAudio.triggerChord(notes, 0.85);
+    setActiveSoundingNotes((prev) => Array.from(new Set([...prev, ...notes])));
+
+    setTimeout(() => {
+      pianoAudio.releaseChord(notes);
+      setActiveSoundingNotes((prev) => prev.filter((n) => !notes.includes(n)));
+    }, 1200);
+  };
+
+  // Start Camera & Audio
   const startSession = async () => {
     setErrorMessage(null);
     setModelLoading(true);
 
     try {
-      // 1. Initialize Audio Engine (user gesture)
+      // 1. Initialize Audio Engine
       const audioStatus = await pianoAudio.initAudio();
       setAudioReady(audioStatus.isReady);
 
@@ -79,6 +121,7 @@ export const App: React.FC = () => {
 
     pianoAudio.stopAll();
     keyEngineRef.current.reset();
+    setActiveSoundingNotes([]);
     setIsRunning(false);
     setCameraActive(false);
     setKeyState('IDLE');
@@ -99,7 +142,6 @@ export const App: React.FC = () => {
       if (video && canvas && video.readyState >= 2) {
         const ctx = canvas.getContext('2d');
         if (ctx) {
-          // Sync canvas dimensions with video
           if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
             canvas.width = video.videoWidth;
             canvas.height = video.videoHeight;
@@ -112,105 +154,104 @@ export const App: React.FC = () => {
           // 1. Run Hand Detection Inference
           const timestamp = performance.now();
           const trackingResult: HandTrackingResult = handTracker.detect(video, timestamp);
-
           setHandDetected(trackingResult.isHandDetected);
 
-          // In camera feeds, horizontal coordinates are mirrored
           let processedFingertip: Point3D | null = null;
           if (trackingResult.indexFingertip) {
-            // Invert x because the video is mirrored with CSS scaleX(-1)
             processedFingertip = {
               x: 1 - trackingResult.indexFingertip.x,
               y: trackingResult.indexFingertip.y,
               z: trackingResult.indexFingertip.z,
             };
           }
-
           setCurrentFingertip(processedFingertip);
 
-          // 2. Evaluate Key Engine State Machine
-          const evaluation = keyEngineRef.current.evaluateFingertip(processedFingertip);
+          // 2. Evaluate 88-Key Model
+          const evaluation = keyEngineRef.current.evaluateFingertipAgainst88Keys(
+            processedFingertip,
+            PIANO_88_KEYS,
+            KEYBOARD_CAMERA_BOUNDS
+          );
           setKeyState(evaluation.state);
 
-          // 3. Audio Triggers
-          if (evaluation.shouldTriggerNoteOn) {
-            pianoAudio.triggerNote('C4', evaluation.estimatedVelocity);
-          } else if (evaluation.shouldTriggerNoteOff && !manualPressed) {
-            pianoAudio.releaseNote('C4');
+          if (evaluation.noteToTrigger) {
+            handleNoteDown(evaluation.noteToTrigger, evaluation.estimatedVelocity);
+          }
+          if (evaluation.noteToRelease) {
+            handleNoteUp(evaluation.noteToRelease);
           }
 
-          // 4. Render Virtual Piano Key on Canvas
-          const keyZone = keyEngineRef.current.getKeyZone();
-          const kx = keyZone.xMin * width;
-          const ky = keyZone.yMin * height;
-          const kw = (keyZone.xMax - keyZone.xMin) * width;
-          const kh = (keyZone.yMax - keyZone.yMin) * height;
-          const isPressed = evaluation.isPressed || manualPressed;
-
-          // Key Base Shadow & Body
+          // 3. Render 88-Key Overlay on Canvas
           ctx.save();
+          const kbX = KEYBOARD_CAMERA_BOUNDS.xMin * width;
+          const kbY = KEYBOARD_CAMERA_BOUNDS.yMin * height;
+          const kbW = (KEYBOARD_CAMERA_BOUNDS.xMax - KEYBOARD_CAMERA_BOUNDS.xMin) * width;
+          const kbH = (KEYBOARD_CAMERA_BOUNDS.yMax - KEYBOARD_CAMERA_BOUNDS.yMin) * height;
 
-          // Pressed offset displacement
-          const offsetY = isPressed ? 8 : 0;
-
-          // Ambient Key Glow when active
-          if (isPressed) {
-            ctx.shadowColor = '#06b6d4';
-            ctx.shadowBlur = 35;
-          } else if (evaluation.state === 'APPROACHING') {
-            ctx.shadowColor = '#f59e0b';
-            ctx.shadowBlur = 20;
-          }
-
-          // Key fill gradient
-          const keyGrad = ctx.createLinearGradient(kx, ky + offsetY, kx, ky + kh + offsetY);
-          if (isPressed) {
-            keyGrad.addColorStop(0, '#06b6d4');
-            keyGrad.addColorStop(1, '#0284c7');
-          } else if (evaluation.state === 'APPROACHING') {
-            keyGrad.addColorStop(0, 'rgba(255, 255, 255, 0.95)');
-            keyGrad.addColorStop(1, 'rgba(254, 243, 199, 0.9)');
-          } else {
-            keyGrad.addColorStop(0, 'rgba(255, 255, 255, 0.9)');
-            keyGrad.addColorStop(1, 'rgba(226, 232, 240, 0.85)');
-          }
-
-          ctx.fillStyle = keyGrad;
+          // Keyboard Backplate
+          ctx.fillStyle = 'rgba(10, 12, 18, 0.85)';
+          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
+          ctx.lineWidth = 2;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
-            ctx.roundRect(kx, ky + offsetY, kw, kh, [12, 12, 16, 16]);
+            ctx.roundRect(kbX - 4, kbY - 4, kbW + 8, kbH + 8, [8, 8, 12, 12]);
           } else {
-            ctx.rect(kx, ky + offsetY, kw, kh);
+            ctx.rect(kbX - 4, kbY - 4, kbW + 8, kbH + 8);
           }
           ctx.fill();
-
-          // Key Border
-          ctx.lineWidth = isPressed ? 4 : 2;
-          ctx.strokeStyle = isPressed
-            ? '#ffffff'
-            : evaluation.state === 'APPROACHING'
-            ? '#f59e0b'
-            : 'rgba(255, 255, 255, 0.6)';
           ctx.stroke();
 
-          // Key Label
-          ctx.shadowBlur = 0;
-          ctx.textAlign = 'center';
-          ctx.fillStyle = isPressed ? '#ffffff' : '#0f172a';
-          ctx.font = '700 24px Outfit, sans-serif';
-          ctx.fillText('C4', kx + kw / 2, ky + kh - 45 + offsetY);
+          // Render White Keys
+          for (const key of PIANO_88_KEYS) {
+            if (key.isBlack) continue;
 
-          ctx.font = '500 13px Outfit, sans-serif';
-          ctx.fillStyle = isPressed ? 'rgba(255,255,255,0.85)' : '#475569';
-          ctx.fillText('Middle C', kx + kw / 2, ky + kh - 22 + offsetY);
+            const kx = kbX + key.xStart * kbW;
+            const kw = (key.xEnd - key.xStart) * kbW;
+            const ky = kbY + key.yStart * kbH;
+            const kh = (key.yEnd - key.yStart) * kbH;
+            const isPressed = activeSoundingNotes.includes(key.id);
 
-          // 5. Draw Tracked Fingertip & Depth Indicator
+            ctx.fillStyle = isPressed
+              ? '#38bdf8'
+              : key.id === 'C4'
+              ? 'rgba(224, 242, 254, 0.92)'
+              : 'rgba(248, 250, 252, 0.88)';
+
+            ctx.fillRect(kx, ky, kw - 1, kh);
+
+            if (key.id === 'C4') {
+              ctx.fillStyle = '#0284c7';
+              ctx.beginPath();
+              ctx.arc(kx + kw / 2, ky + kh - 10, 3, 0, Math.PI * 2);
+              ctx.fill();
+            }
+          }
+
+          // Render Black Keys (Top layer)
+          for (const key of PIANO_88_KEYS) {
+            if (!key.isBlack) continue;
+
+            const kx = kbX + key.xStart * kbW;
+            const kw = (key.xEnd - key.xStart) * kbW;
+            const ky = kbY + key.yStart * kbH;
+            const kh = (key.yEnd - key.yStart) * kbH;
+            const isPressed = activeSoundingNotes.includes(key.id);
+
+            ctx.fillStyle = isPressed ? '#0284c7' : '#18181b';
+            ctx.fillRect(kx, ky, kw, kh);
+
+            ctx.strokeStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.lineWidth = 1;
+            ctx.strokeRect(kx, ky, kw, kh);
+          }
+
+          // 4. Draw Fingertip & Depth Ring
           if (processedFingertip) {
             const fx = processedFingertip.x * width;
             const fy = processedFingertip.y * height;
+            const isPressed = evaluation.isPressed;
 
-            // Fingertip outer depth ring (shrinks as finger pushes into key)
-            const ringRadius = Math.max(14, 40 * (1 - evaluation.depthRatio * 0.6));
+            const ringRadius = Math.max(12, 34 * (1 - evaluation.depthRatio * 0.6));
             ctx.beginPath();
             ctx.arc(fx, fy, ringRadius, 0, Math.PI * 2);
             ctx.strokeStyle = isPressed
@@ -218,27 +259,22 @@ export const App: React.FC = () => {
               : evaluation.state === 'APPROACHING'
               ? '#f59e0b'
               : '#38bdf8';
-            ctx.lineWidth = 3;
+            ctx.lineWidth = 2.5;
             ctx.stroke();
 
-            // Fingertip center core dot
             ctx.beginPath();
-            ctx.arc(fx, fy, 7, 0, Math.PI * 2);
+            ctx.arc(fx, fy, 6, 0, Math.PI * 2);
             ctx.fillStyle = isPressed ? '#10b981' : '#ffffff';
             ctx.shadowColor = '#38bdf8';
-            ctx.shadowBlur = 10;
+            ctx.shadowBlur = 8;
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            // Coordinate tag
-            ctx.font = '11px JetBrains Mono, monospace';
-            ctx.fillStyle = '#ffffff';
-            ctx.textAlign = 'left';
-            ctx.fillText(
-              `z: ${processedFingertip.z.toFixed(3)}`,
-              fx + 16,
-              fy - 8
-            );
+            if (evaluation.activeKey) {
+              ctx.font = '700 12px JetBrains Mono, monospace';
+              ctx.fillStyle = isPressed ? '#10b981' : '#f8fafc';
+              ctx.fillText(evaluation.activeKey.id, fx + 14, fy - 6);
+            }
           }
 
           ctx.restore();
@@ -264,20 +300,7 @@ export const App: React.FC = () => {
         cancelAnimationFrame(requestRef.current);
       }
     };
-  }, [isRunning, cameraActive, manualPressed]);
-
-  // Manual fallback trigger (mouse/touch)
-  const handleManualDown = () => {
-    setManualPressed(true);
-    pianoAudio.triggerNote('C4', 0.9);
-  };
-
-  const handleManualUp = () => {
-    setManualPressed(false);
-    if (keyState !== 'PRESSED') {
-      pianoAudio.releaseNote('C4');
-    }
-  };
+  }, [isRunning, cameraActive, activeSoundingNotes, handleNoteDown, handleNoteUp]);
 
   return (
     <div className="app-container">
@@ -288,7 +311,7 @@ export const App: React.FC = () => {
           <div>
             <h1 className="brand-title">Virtual Piano</h1>
           </div>
-          <span className="badge">Slice 1: Tech Spike</span>
+          <span className="badge">Slice 2: 88 Keys</span>
         </div>
 
         <div className="status-indicators">
@@ -302,77 +325,96 @@ export const App: React.FC = () => {
           </div>
           <div className="indicator">
             <span className={`dot ${audioReady ? 'active' : ''}`} />
-            <span>Tone.js Audio</span>
+            <span>Tone.js Polyphony</span>
           </div>
         </div>
       </header>
 
       {errorMessage && (
-        <div style={{
-          background: 'rgba(244, 63, 94, 0.15)',
-          border: '1px solid rgba(244, 63, 94, 0.4)',
-          color: '#fecdd3',
-          padding: '0.8rem 1.2rem',
-          borderRadius: '12px',
-          fontSize: '0.9rem'
-        }}>
+        <div
+          style={{
+            background: 'rgba(244, 63, 94, 0.15)',
+            border: '1px solid rgba(244, 63, 94, 0.4)',
+            color: '#fecdd3',
+            padding: '0.8rem 1.2rem',
+            borderRadius: '12px',
+            fontSize: '0.9rem',
+          }}
+        >
           {errorMessage}
         </div>
       )}
 
-      {/* Main Grid */}
+      {/* Main Grid: Viewport + Telemetry */}
       <main className="stage-grid">
         {/* Left: Viewport */}
         <div className="viewport-card">
-          <video
-            ref={videoRef}
-            className="camera-video"
-            playsInline
-            muted
-          />
-          <canvas
-            ref={canvasRef}
-            className="canvas-overlay"
-          />
+          <video ref={videoRef} className="camera-video" playsInline muted />
+          <canvas ref={canvasRef} className="canvas-overlay" />
 
-          {/* Start Screen Overlay */}
           {!isRunning && (
             <div className="overlay-start">
-              <h2>Real-Time Single Key Spike</h2>
+              <h2>88-Key Virtual Piano</h2>
               <p>
-                Experience hands-free piano playing. Click below to grant camera access and activate the Web Audio engine.
+                Experience real-time camera hand tracking across 88 keys, or play directly with your mouse, touch, or QWERTY keyboard.
               </p>
               <button
                 className="btn-primary"
                 onClick={startSession}
                 disabled={modelLoading}
               >
-                {modelLoading ? 'Initializing MediaPipe...' : 'Start Camera & Sound'}
+                {modelLoading ? 'Initializing MediaPipe...' : 'Enable Camera & Sound'}
               </button>
             </div>
           )}
         </div>
 
-        {/* Right: Sidebar Diagnostics */}
+        {/* Right: Sidebar Telemetry & Chord Tester */}
         <aside className="sidebar-panel">
-          {/* Telemetry Card */}
           <div className="panel-card">
-            <h3>Live Telemetry</h3>
+            <h3>Polyphonic Telemetry</h3>
             <div className="telemetry-grid">
               <div className="metric-box">
                 <div className="metric-label">Engine FPS</div>
                 <div className="metric-value">{fps}</div>
               </div>
               <div className="metric-box">
-                <div className="metric-label">Key Note</div>
-                <div className="metric-value">C4 (60)</div>
+                <div className="metric-label">Active Voices</div>
+                <div className="metric-value">{activeSoundingNotes.length}</div>
               </div>
             </div>
 
             <div>
-              <div className="metric-label" style={{ marginBottom: '0.4rem' }}>Key State Machine</div>
-              <div className={`state-badge state-${keyState}`}>
-                {keyState}
+              <div className="metric-label" style={{ marginBottom: '0.4rem' }}>
+                Sounding Notes ({activeSoundingNotes.length})
+              </div>
+              <div className="active-chord-box">
+                {activeSoundingNotes.length > 0 ? (
+                  activeSoundingNotes.map((note) => (
+                    <span key={note} className="note-chip">
+                      {note}
+                    </span>
+                  ))
+                ) : (
+                  <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>
+                    No keys active (Last: {lastTriggeredNote})
+                  </span>
+                )}
+              </div>
+            </div>
+
+            <div className="telemetry-grid">
+              <div className="metric-box">
+                <div className="metric-label">Key State</div>
+                <div className={`state-badge state-${keyState}`} style={{ marginTop: '0.2rem' }}>
+                  {keyState}
+                </div>
+              </div>
+              <div className="metric-box">
+                <div className="metric-label">Depth (z)</div>
+                <div className="metric-value" style={{ fontSize: '0.95rem' }}>
+                  {currentFingertip ? currentFingertip.z.toFixed(3) : '—'}
+                </div>
               </div>
             </div>
 
@@ -384,9 +426,9 @@ export const App: React.FC = () => {
                 </div>
               </div>
               <div className="metric-box">
-                <div className="metric-label">Depth (z)</div>
+                <div className="metric-label">Current Note</div>
                 <div className="metric-value" style={{ fontSize: '0.95rem' }}>
-                  {currentFingertip ? currentFingertip.z.toFixed(3) : '—'}
+                  {lastTriggeredNote}
                 </div>
               </div>
             </div>
@@ -402,36 +444,50 @@ export const App: React.FC = () => {
             )}
           </div>
 
-          {/* Manual Test Key Card */}
+          {/* Polyphony Quick Audition Card */}
           <div className="panel-card">
-            <h3>Fallback Direct Test</h3>
+            <h3>Chord Audition (Polyphony)</h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
-              Click and hold to test audio synthesis directly without camera:
+              Test multi-voice chords without audio clipping:
             </p>
-            <button
-              className={`manual-key-btn ${manualPressed ? 'is-active' : ''}`}
-              onMouseDown={handleManualDown}
-              onMouseUp={handleManualUp}
-              onMouseLeave={handleManualUp}
-              onTouchStart={handleManualDown}
-              onTouchEnd={handleManualUp}
-            >
-              🎹 Play Middle C (C4)
-            </button>
-          </div>
-
-          {/* Quick Guide */}
-          <div className="panel-card">
-            <h3>How to Play</h3>
-            <ol className="instructions-list">
-              <li>Place your hand in front of the webcam.</li>
-              <li>Point your <strong>index finger</strong> toward the virtual <strong>C4 key</strong>.</li>
-              <li>Push your finger <strong>downward / toward the desk</strong> to strike the key.</li>
-              <li>Lift your finger up to release the note.</li>
-            </ol>
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.5rem' }}>
+              <button
+                className="btn-secondary"
+                onClick={() => playPresetChord(['C4', 'E4', 'G4'])}
+              >
+                C Major
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => playPresetChord(['G3', 'B3', 'D4', 'F4'])}
+              >
+                G7
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => playPresetChord(['A3', 'C4', 'E4'])}
+              >
+                A Minor
+              </button>
+              <button
+                className="btn-secondary"
+                onClick={() => playPresetChord(['F3', 'A3', 'C4', 'E4'])}
+              >
+                Fmaj7
+              </button>
+            </div>
           </div>
         </aside>
       </main>
+
+      {/* Interactive Piano Keyboard Deck */}
+      <section className="piano-section">
+        <PianoKeyboard
+          activeNotes={activeSoundingNotes}
+          onNoteDown={handleNoteDown}
+          onNoteUp={handleNoteUp}
+        />
+      </section>
     </div>
   );
 };
