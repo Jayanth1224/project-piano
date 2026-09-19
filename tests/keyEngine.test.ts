@@ -82,3 +82,46 @@ test('KeyEngine - Triggers NoteOff if finger exits bounds while pressed', () => 
   assert.equal(exitResult.isPressed, false);
   assert.equal(exitResult.shouldTriggerNoteOff, true);
 });
+
+test('KeyEngine - evaluateFingertipAgainst88Keys maps coordinates to correct key and triggers note', async () => {
+  const { PIANO_88_KEYS } = await import('../src/services/piano/pianoModel.ts');
+  const engine = new KeyEngine(DEFAULT_MIDDLE_C_KEY);
+
+  const kbBounds = { xMin: 0.0, xMax: 1.0, yMin: 0.0, yMax: 1.0 };
+  const c4 = PIANO_88_KEYS.find((k) => k.id === 'C4')!;
+
+  // Point right at C4 center
+  const targetX = (c4.xStart + c4.xEnd) / 2;
+  const targetY = 0.85;
+
+  // Approach
+  const approachResult = engine.evaluateFingertipAgainst88Keys(
+    { x: targetX, y: targetY, z: -0.01 },
+    PIANO_88_KEYS,
+    kbBounds
+  );
+  assert.equal(approachResult.state, 'APPROACHING');
+  assert.equal(approachResult.activeKey?.id, 'C4');
+  assert.equal(approachResult.isPressed, false);
+
+  // Press down
+  const pressResult = engine.evaluateFingertipAgainst88Keys(
+    { x: targetX, y: targetY, z: -0.05 },
+    PIANO_88_KEYS,
+    kbBounds
+  );
+  assert.equal(pressResult.state, 'PRESSED');
+  assert.equal(pressResult.isPressed, true);
+  assert.equal(pressResult.noteToTrigger, 'C4');
+  assert.equal(pressResult.pressedKey?.id, 'C4');
+
+  // Lift up
+  const releaseResult = engine.evaluateFingertipAgainst88Keys(
+    { x: targetX, y: targetY, z: 0.0 },
+    PIANO_88_KEYS,
+    kbBounds
+  );
+  assert.equal(releaseResult.isPressed, false);
+  assert.equal(releaseResult.noteToRelease, 'C4');
+});
+
