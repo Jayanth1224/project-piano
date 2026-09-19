@@ -133,3 +133,62 @@ test('MultiFingerEngine - hand leaves camera frame releases active held notes', 
   assert.deepEqual(result.notesToRelease, ['C4']);
   assert.equal(result.pressedKeys.length, 0);
 });
+
+test('MultiFingerEngine - calibrated resting surface prevents false presses while hovering and releases naturally', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const c4ScreenX = 0.05 + c4CenterX * 0.90;
+  const screenY = 0.70;
+
+  // Apply calibration: resting surface is at z = -0.040
+  // pressThreshold = -0.040 + (-0.020) = -0.060
+  // releaseThreshold = -0.040 + (-0.006) = -0.046
+  engine.applyCalibration({
+    xMin: 0.05,
+    xMax: 0.95,
+    yMin: 0.55,
+    yMax: 0.90,
+    depthReference: -0.040,
+    pressOffset: -0.020,
+    releaseOffset: -0.006,
+    isCalibrated: true,
+    updatedAt: 100,
+  });
+
+  // Step 1: Hand enters keyboard hovering above the surface at z = -0.035
+  // Previously (without calibration), -0.035 was close to threshold and could cause sticking.
+  // With calibration, press threshold is -0.060, so -0.035 MUST NOT trigger!
+  const hoverResult = engine.processFrame(
+    [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 } }],
+    keys
+  );
+  assert.equal(hoverResult.notesToTrigger.length, 0, 'Hovering must NOT trigger notes');
+  assert.equal(hoverResult.pressedKeys.length, 0);
+
+  // Step 2: Push finger into the desk surface to z = -0.068 (past -0.060)
+  // Run 3 frames for EMA filter to track downward strike
+  let pressResult;
+  for (let i = 0; i < 3; i++) {
+    pressResult = engine.processFrame(
+      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.068 } }],
+      keys
+    );
+  }
+  assert.ok(pressResult);
+  assert.equal(pressResult.pressedKeys.length, 1, 'Pressing past calibrated surface MUST trigger note');
+  assert.equal(pressResult.pressedKeys[0].id, 'C4');
+
+  // Step 3: Lift finger up off the surface to z = -0.040 (above release threshold -0.046)
+  // Run 3 frames for EMA filter convergence
+  let releaseResult;
+  for (let i = 0; i < 3; i++) {
+    releaseResult = engine.processFrame(
+      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.040 } }],
+      keys
+    );
+  }
+  assert.ok(releaseResult);
+  assert.deepEqual(releaseResult.notesToRelease, ['C4'], 'Lifting finger off the desk MUST release the note');
+  assert.equal(releaseResult.pressedKeys.length, 0);
+});

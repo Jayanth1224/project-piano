@@ -8,13 +8,11 @@ import {
 } from './services/piano/multiFingerEngine.ts';
 import { PIANO_88_KEYS } from './services/piano/pianoModel.ts';
 import { PianoKeyboard } from './components/PianoKeyboard.tsx';
-
-const KEYBOARD_CAMERA_BOUNDS = {
-  xMin: 0.04,
-  xMax: 0.96,
-  yMin: 0.58,
-  yMax: 0.88,
-};
+import {
+  calibrationService,
+  type PianoCalibration,
+} from './services/calibration/calibrationService.ts';
+import { CalibrationModal } from './components/CalibrationModal.tsx';
 
 const HAND_CONNECTIONS: [number, number][] = [
   // Thumb
@@ -34,8 +32,15 @@ const HAND_CONNECTIONS: [number, number][] = [
 export const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
+
+  // Persistent room calibration
+  const [calibration, setCalibration] = useState<PianoCalibration>(() =>
+    calibrationService.loadCalibration()
+  );
+  const [isCalibrating, setIsCalibrating] = useState<boolean>(false);
+
   const multiFingerEngineRef = useRef<MultiFingerEngine>(
-    new MultiFingerEngine(KEYBOARD_CAMERA_BOUNDS)
+    new MultiFingerEngine()
   );
   const requestRef = useRef<number | null>(null);
 
@@ -54,6 +59,11 @@ export const App: React.FC = () => {
   const [activeSoundingNotes, setActiveSoundingNotes] = useState<string[]>([]);
   const [lastTriggeredNote, setLastTriggeredNote] = useState<string>('C4');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+
+  // Apply calibration to multiFingerEngine whenever calibration changes
+  useEffect(() => {
+    multiFingerEngineRef.current.applyCalibration(calibration);
+  }, [calibration]);
 
   // Note down handler (called by camera, touch, mouse, or QWERTY keyboard)
   const handleNoteDown = useCallback(async (noteId: string, velocity = 0.85) => {
@@ -202,7 +212,7 @@ export const App: React.FC = () => {
             },
           }));
 
-          // 3. Process All 10 Fingers in MultiFingerEngine
+          // 3. Process All 10 Fingers in MultiFingerEngine with Calibrated Thresholds
           const frameResult = multiFingerEngineRef.current.processFrame(
             fingertipInputs,
             PIANO_88_KEYS,
@@ -225,16 +235,16 @@ export const App: React.FC = () => {
 
           ctx.save();
 
-          // 5. Draw 88-Key Keyboard Overlay on Canvas
-          const kbX = KEYBOARD_CAMERA_BOUNDS.xMin * width;
-          const kbY = KEYBOARD_CAMERA_BOUNDS.yMin * height;
-          const kbW = (KEYBOARD_CAMERA_BOUNDS.xMax - KEYBOARD_CAMERA_BOUNDS.xMin) * width;
-          const kbH = (KEYBOARD_CAMERA_BOUNDS.yMax - KEYBOARD_CAMERA_BOUNDS.yMin) * height;
+          // 5. Draw Calibrated 88-Key Keyboard Overlay on Canvas
+          const kbX = calibration.xMin * width;
+          const kbY = calibration.yMin * height;
+          const kbW = (calibration.xMax - calibration.xMin) * width;
+          const kbH = (calibration.yMax - calibration.yMin) * height;
 
           // Keyboard Backplate
-          ctx.fillStyle = 'rgba(10, 12, 18, 0.85)';
-          ctx.strokeStyle = 'rgba(255, 255, 255, 0.2)';
-          ctx.lineWidth = 2;
+          ctx.fillStyle = 'rgba(10, 12, 18, 0.88)';
+          ctx.strokeStyle = calibration.isCalibrated ? 'rgba(56, 189, 248, 0.6)' : 'rgba(255, 255, 255, 0.2)';
+          ctx.lineWidth = calibration.isCalibrated ? 2.5 : 2;
           ctx.beginPath();
           if (typeof ctx.roundRect === 'function') {
             ctx.roundRect(kbX - 4, kbY - 4, kbW + 8, kbH + 8, [8, 8, 12, 12]);
@@ -288,6 +298,19 @@ export const App: React.FC = () => {
             ctx.strokeRect(kx, ky, kw, kh);
           }
 
+          // Visual Calibration Guide Overlay (if calibration is active)
+          if (isCalibrating) {
+            ctx.strokeStyle = '#38bdf8';
+            ctx.setLineDash([8, 6]);
+            ctx.lineWidth = 3;
+            ctx.strokeRect(kbX - 8, kbY - 8, kbW + 16, kbH + 16);
+            ctx.setLineDash([]);
+
+            ctx.font = '700 13px Inter, sans-serif';
+            ctx.fillStyle = '#38bdf8';
+            ctx.fillText('📐 Desk Anchor Boundary', kbX, kbY - 14);
+          }
+
           // 6. Draw Hand Skeletons for Both Hands
           for (const hand of trackingResult.hands) {
             const isLeft = hand.handSide === 'Left';
@@ -316,7 +339,6 @@ export const App: React.FC = () => {
 
             // Draw joint nodes
             for (let i = 0; i < hand.landmarks.length; i++) {
-              // Skip fingertips here; rendered separately below
               if ([4, 8, 12, 16, 20].includes(i)) continue;
               const p = hand.landmarks[i];
               const jx = (1 - p.x) * width;
@@ -329,7 +351,7 @@ export const App: React.FC = () => {
             }
           }
 
-          // 7. Draw All Tracked Fingertips with Depth Rings & State
+          // 7. Draw All Tracked Fingertips with Dynamic Depth Rings & Contact State
           for (const finger of fingerStateList) {
             const fx = finger.smoothedPosition.x * width;
             const fy = finger.smoothedPosition.y * height;
@@ -401,7 +423,7 @@ export const App: React.FC = () => {
         cancelAnimationFrame(requestRef.current);
       }
     };
-  }, [isRunning, cameraActive, activeSoundingNotes, handleNoteDown, handleNoteUp]);
+  }, [isRunning, cameraActive, activeSoundingNotes, handleNoteDown, handleNoteUp, calibration, isCalibrating]);
 
   return (
     <div className="app-container">
@@ -412,10 +434,22 @@ export const App: React.FC = () => {
           <div>
             <h1 className="brand-title">Virtual Piano</h1>
           </div>
-          <span className="badge">Slice 3: Two-Hand 10-Finger</span>
+          <span className="badge">Slice 4: Space Calibration</span>
         </div>
 
         <div className="status-indicators">
+          <button
+            className="btn-secondary"
+            onClick={() => setIsCalibrating(true)}
+            style={{
+              padding: '0.4rem 0.8rem',
+              fontSize: '0.8rem',
+              border: calibration.isCalibrated ? '1px solid #38bdf8' : '1px solid var(--border-subtle)',
+              color: calibration.isCalibrated ? '#38bdf8' : 'inherit',
+            }}
+          >
+            {calibration.isCalibrated ? '📍 Desk Anchored' : '📐 Calibrate Desk'}
+          </button>
           <div className="indicator">
             <span className={`dot ${cameraActive ? 'active' : ''}`} />
             <span>Camera</span>
@@ -455,9 +489,9 @@ export const App: React.FC = () => {
 
           {!isRunning && (
             <div className="overlay-start">
-              <h2>Two-Hand 10-Finger Virtual Piano</h2>
+              <h2>Calibrated Virtual Piano</h2>
               <p>
-                Track both hands simultaneously with full 10-finger polyphony and jitter smoothing across all 88 keys.
+                Rest your hands naturally on your desk, calibrate the surface in one tap, and play with full 10-finger polyphony.
               </p>
               <button
                 className="btn-primary"
@@ -470,10 +504,41 @@ export const App: React.FC = () => {
           )}
         </div>
 
-        {/* Right: Sidebar Telemetry & Chord Tester */}
+        {/* Right: Sidebar Telemetry & Calibration Status */}
         <aside className="sidebar-panel">
           <div className="panel-card">
-            <h3>Two-Hand Tracking</h3>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+              <h3>Room Anchor Status</h3>
+              <button
+                className="btn-secondary"
+                style={{ padding: '0.3rem 0.6rem', fontSize: '0.75rem' }}
+                onClick={() => setIsCalibrating(true)}
+              >
+                Adjust 📐
+              </button>
+            </div>
+
+            <div className="telemetry-grid">
+              <div className="metric-box">
+                <div className="metric-label">Anchor State</div>
+                <div
+                  className="metric-value"
+                  style={{
+                    color: calibration.isCalibrated ? '#38bdf8' : 'var(--text-muted)',
+                    fontSize: '0.95rem',
+                  }}
+                >
+                  {calibration.isCalibrated ? 'Anchored 📍' : 'Default (Air)'}
+                </div>
+              </div>
+              <div className="metric-box">
+                <div className="metric-label">Resting Surface z</div>
+                <div className="metric-value" style={{ fontSize: '0.95rem' }}>
+                  {calibration.depthReference.toFixed(3)}
+                </div>
+              </div>
+            </div>
+
             <div className="telemetry-grid">
               <div className="metric-box">
                 <div className="metric-label">Left Hand</div>
@@ -533,7 +598,7 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            {/* Fingertips Status Strip */}
+            {/* Tracked Fingers Status */}
             <div>
               <div className="metric-label" style={{ marginBottom: '0.4rem' }}>
                 Tracked Fingers ({trackedFingersList.length})
@@ -626,6 +691,24 @@ export const App: React.FC = () => {
           onNoteUp={handleNoteUp}
         />
       </section>
+
+      {/* Space Calibration Modal */}
+      {isCalibrating && (
+        <CalibrationModal
+          currentCalibration={calibration}
+          detectedFingertips={trackedFingersList.map((f) => ({ z: f.rawPosition.z }))}
+          onSave={(newCal) => {
+            calibrationService.saveCalibration(newCal);
+            setCalibration(newCal);
+            setIsCalibrating(false);
+          }}
+          onReset={() => {
+            const resetCal = calibrationService.resetCalibration();
+            setCalibration(resetCal);
+          }}
+          onClose={() => setIsCalibrating(false)}
+        />
+      )}
     </div>
   );
 };

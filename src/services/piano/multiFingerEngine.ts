@@ -1,6 +1,7 @@
 import { type PianoKey, getKeyAtCoordinate } from './pianoModel.ts';
 import { type Point3D, type KeyState } from './keyEngine.ts';
 import { EmaFilter3D } from '../vision/emaFilter.ts';
+import { type PianoCalibration } from '../calibration/calibrationService.ts';
 
 export type HandSide = 'Left' | 'Right';
 export type FingerName = 'thumb' | 'index' | 'middle' | 'ring' | 'pinky';
@@ -87,6 +88,25 @@ export class MultiFingerEngine {
 
   setKeyboardArea(area: Partial<KeyboardArea>): void {
     this.keyboardArea = { ...this.keyboardArea, ...area };
+  }
+
+  applyCalibration(calibration: PianoCalibration): void {
+    this.keyboardArea = {
+      xMin: calibration.xMin,
+      xMax: calibration.xMax,
+      yMin: calibration.yMin,
+      yMax: calibration.yMax,
+    };
+    this.pressDepthThreshold = calibration.depthReference + calibration.pressOffset;
+    this.releaseDepthThreshold = calibration.depthReference + calibration.releaseOffset;
+  }
+
+  getThresholds(): { press: number; release: number } {
+    return { press: this.pressDepthThreshold, release: this.releaseDepthThreshold };
+  }
+
+  getKeyboardArea(): KeyboardArea {
+    return { ...this.keyboardArea };
   }
 
   /**
