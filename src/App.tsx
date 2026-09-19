@@ -1,9 +1,13 @@
 import React, { useEffect, useRef, useState, useCallback } from 'react';
-import { handTracker, HandTrackingResult } from './services/vision/handTracker';
-import { pianoAudio } from './services/audio/pianoAudio';
-import { KeyEngine, KeyState, Point3D, DEFAULT_MIDDLE_C_KEY } from './services/piano/keyEngine';
+import { handTracker, type HandTrackingResult } from './services/vision/handTracker.ts';
+import { pianoAudio } from './services/audio/pianoAudio.ts';
+import {
+  MultiFingerEngine,
+  type FingertipInput,
+  type FingerState,
+} from './services/piano/multiFingerEngine.ts';
 import { PIANO_88_KEYS } from './services/piano/pianoModel.ts';
-import { PianoKeyboard } from './components/PianoKeyboard';
+import { PianoKeyboard } from './components/PianoKeyboard.tsx';
 
 const KEYBOARD_CAMERA_BOUNDS = {
   xMin: 0.04,
@@ -12,10 +16,27 @@ const KEYBOARD_CAMERA_BOUNDS = {
   yMax: 0.88,
 };
 
+const HAND_CONNECTIONS: [number, number][] = [
+  // Thumb
+  [0, 1], [1, 2], [2, 3], [3, 4],
+  // Index
+  [0, 5], [5, 6], [6, 7], [7, 8],
+  // Middle
+  [0, 9], [9, 10], [10, 11], [11, 12],
+  // Ring
+  [0, 13], [13, 14], [14, 15], [15, 16],
+  // Pinky
+  [0, 17], [17, 18], [18, 19], [19, 20],
+  // Knuckles / Palm
+  [5, 9], [9, 13], [13, 17],
+];
+
 export const App: React.FC = () => {
   const videoRef = useRef<HTMLVideoElement | null>(null);
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
-  const keyEngineRef = useRef<KeyEngine>(new KeyEngine(DEFAULT_MIDDLE_C_KEY));
+  const multiFingerEngineRef = useRef<MultiFingerEngine>(
+    new MultiFingerEngine(KEYBOARD_CAMERA_BOUNDS)
+  );
   const requestRef = useRef<number | null>(null);
 
   const [isRunning, setIsRunning] = useState<boolean>(false);
@@ -24,9 +45,12 @@ export const App: React.FC = () => {
   const [audioReady, setAudioReady] = useState<boolean>(false);
   const [cameraActive, setCameraActive] = useState<boolean>(false);
   const [fps, setFps] = useState<number>(0);
-  const [keyState, setKeyState] = useState<KeyState>('IDLE');
-  const [currentFingertip, setCurrentFingertip] = useState<Point3D | null>(null);
-  const [handDetected, setHandDetected] = useState<boolean>(false);
+
+  // Two-hand telemetry
+  const [leftHandDetected, setLeftHandDetected] = useState<boolean>(false);
+  const [rightHandDetected, setRightHandDetected] = useState<boolean>(false);
+  const [activeFingersCount, setActiveFingersCount] = useState<number>(0);
+  const [trackedFingersList, setTrackedFingersList] = useState<FingerState[]>([]);
   const [activeSoundingNotes, setActiveSoundingNotes] = useState<string[]>([]);
   const [lastTriggeredNote, setLastTriggeredNote] = useState<string>('C4');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
@@ -120,12 +144,14 @@ export const App: React.FC = () => {
     }
 
     pianoAudio.stopAll();
-    keyEngineRef.current.reset();
+    multiFingerEngineRef.current.reset();
     setActiveSoundingNotes([]);
     setIsRunning(false);
     setCameraActive(false);
-    setKeyState('IDLE');
-    setHandDetected(false);
+    setLeftHandDetected(false);
+    setRightHandDetected(false);
+    setActiveFingersCount(0);
+    setTrackedFingersList([]);
   }, []);
 
   // Main real-time render and tracking loop
@@ -151,38 +177,55 @@ export const App: React.FC = () => {
           const height = canvas.height;
           ctx.clearRect(0, 0, width, height);
 
-          // 1. Run Hand Detection Inference
+          // 1. Run Two-Hand Detection Inference
           const timestamp = performance.now();
           const trackingResult: HandTrackingResult = handTracker.detect(video, timestamp);
-          setHandDetected(trackingResult.isHandDetected);
 
-          let processedFingertip: Point3D | null = null;
-          if (trackingResult.indexFingertip) {
-            processedFingertip = {
-              x: 1 - trackingResult.indexFingertip.x,
-              y: trackingResult.indexFingertip.y,
-              z: trackingResult.indexFingertip.z,
-            };
+          let hasLeft = false;
+          let hasRight = false;
+          for (const h of trackingResult.hands) {
+            if (h.handSide === 'Left') hasLeft = true;
+            if (h.handSide === 'Right') hasRight = true;
           }
-          setCurrentFingertip(processedFingertip);
+          setLeftHandDetected(hasLeft);
+          setRightHandDetected(hasRight);
 
-          // 2. Evaluate 88-Key Model
-          const evaluation = keyEngineRef.current.evaluateFingertipAgainst88Keys(
-            processedFingertip,
+          // 2. Prepare Mirrored Fingertip Coordinates for MultiFingerEngine
+          const fingertipInputs: FingertipInput[] = trackingResult.allFingertips.map((ft) => ({
+            id: ft.id,
+            handSide: ft.handSide,
+            fingerName: ft.fingerName,
+            rawPosition: {
+              x: 1 - ft.smoothedPosition.x, // Mirror horizontally for selfie view
+              y: ft.smoothedPosition.y,
+              z: ft.smoothedPosition.z,
+            },
+          }));
+
+          // 3. Process All 10 Fingers in MultiFingerEngine
+          const frameResult = multiFingerEngineRef.current.processFrame(
+            fingertipInputs,
             PIANO_88_KEYS,
-            KEYBOARD_CAMERA_BOUNDS
+            timestamp
           );
-          setKeyState(evaluation.state);
 
-          if (evaluation.noteToTrigger) {
-            handleNoteDown(evaluation.noteToTrigger, evaluation.estimatedVelocity);
+          // 4. Batch Audio Note Triggers and Releases
+          for (const { note, velocity } of frameResult.notesToTrigger) {
+            handleNoteDown(note, velocity);
           }
-          if (evaluation.noteToRelease) {
-            handleNoteUp(evaluation.noteToRelease);
+          for (const note of frameResult.notesToRelease) {
+            handleNoteUp(note);
           }
 
-          // 3. Render 88-Key Overlay on Canvas
+          // Update UI state for active fingers
+          const fingerStateList = Array.from(frameResult.fingers.values());
+          setTrackedFingersList(fingerStateList);
+          const pressedCount = fingerStateList.filter((f) => f.state === 'PRESSED').length;
+          setActiveFingersCount(pressedCount);
+
           ctx.save();
+
+          // 5. Draw 88-Key Keyboard Overlay on Canvas
           const kbX = KEYBOARD_CAMERA_BOUNDS.xMin * width;
           const kbY = KEYBOARD_CAMERA_BOUNDS.yMin * height;
           const kbW = (KEYBOARD_CAMERA_BOUNDS.xMax - KEYBOARD_CAMERA_BOUNDS.xMin) * width;
@@ -214,7 +257,7 @@ export const App: React.FC = () => {
             ctx.fillStyle = isPressed
               ? '#38bdf8'
               : key.id === 'C4'
-              ? 'rgba(224, 242, 254, 0.92)'
+              ? 'rgba(224, 242, 254, 0.95)'
               : 'rgba(248, 250, 252, 0.88)';
 
             ctx.fillRect(kx, ky, kw - 1, kh);
@@ -245,36 +288,94 @@ export const App: React.FC = () => {
             ctx.strokeRect(kx, ky, kw, kh);
           }
 
-          // 4. Draw Fingertip & Depth Ring
-          if (processedFingertip) {
-            const fx = processedFingertip.x * width;
-            const fy = processedFingertip.y * height;
-            const isPressed = evaluation.isPressed;
+          // 6. Draw Hand Skeletons for Both Hands
+          for (const hand of trackingResult.hands) {
+            const isLeft = hand.handSide === 'Left';
+            const boneColor = isLeft ? 'rgba(6, 182, 212, 0.65)' : 'rgba(245, 158, 11, 0.65)';
+            const jointColor = isLeft ? '#22d3ee' : '#fbbf24';
 
-            const ringRadius = Math.max(12, 34 * (1 - evaluation.depthRatio * 0.6));
+            ctx.strokeStyle = boneColor;
+            ctx.lineWidth = 2.5;
+
+            // Draw bone links
+            for (const [idx1, idx2] of HAND_CONNECTIONS) {
+              const p1 = hand.landmarks[idx1];
+              const p2 = hand.landmarks[idx2];
+              if (!p1 || !p2) continue;
+
+              const x1 = (1 - p1.x) * width;
+              const y1 = p1.y * height;
+              const x2 = (1 - p2.x) * width;
+              const y2 = p2.y * height;
+
+              ctx.beginPath();
+              ctx.moveTo(x1, y1);
+              ctx.lineTo(x2, y2);
+              ctx.stroke();
+            }
+
+            // Draw joint nodes
+            for (let i = 0; i < hand.landmarks.length; i++) {
+              // Skip fingertips here; rendered separately below
+              if ([4, 8, 12, 16, 20].includes(i)) continue;
+              const p = hand.landmarks[i];
+              const jx = (1 - p.x) * width;
+              const jy = p.y * height;
+
+              ctx.beginPath();
+              ctx.arc(jx, jy, 3.5, 0, Math.PI * 2);
+              ctx.fillStyle = jointColor;
+              ctx.fill();
+            }
+          }
+
+          // 7. Draw All Tracked Fingertips with Depth Rings & State
+          for (const finger of fingerStateList) {
+            const fx = finger.smoothedPosition.x * width;
+            const fy = finger.smoothedPosition.y * height;
+            const isPressed = finger.state === 'PRESSED';
+            const isApproaching = finger.state === 'APPROACHING';
+            const isLeft = finger.handSide === 'Left';
+
+            // Depth ring: size shrinks as finger approaches the press threshold
+            const ringRadius = Math.max(10, 30 * (1 - finger.depthRatio * 0.6));
+
             ctx.beginPath();
             ctx.arc(fx, fy, ringRadius, 0, Math.PI * 2);
             ctx.strokeStyle = isPressed
               ? '#10b981'
-              : evaluation.state === 'APPROACHING'
+              : isApproaching
               ? '#f59e0b'
-              : '#38bdf8';
-            ctx.lineWidth = 2.5;
+              : isLeft
+              ? 'rgba(6, 182, 212, 0.6)'
+              : 'rgba(245, 158, 11, 0.6)';
+            ctx.lineWidth = isPressed ? 3 : 2;
             ctx.stroke();
 
+            // Center contact dot
             ctx.beginPath();
-            ctx.arc(fx, fy, 6, 0, Math.PI * 2);
-            ctx.fillStyle = isPressed ? '#10b981' : '#ffffff';
-            ctx.shadowColor = '#38bdf8';
-            ctx.shadowBlur = 8;
+            ctx.arc(fx, fy, isPressed ? 7 : 5, 0, Math.PI * 2);
+            ctx.fillStyle = isPressed
+              ? '#10b981'
+              : isLeft
+              ? '#06b6d4'
+              : '#f59e0b';
+            if (isPressed) {
+              ctx.shadowColor = '#10b981';
+              ctx.shadowBlur = 10;
+            }
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            if (evaluation.activeKey) {
-              ctx.font = '700 12px JetBrains Mono, monospace';
-              ctx.fillStyle = isPressed ? '#10b981' : '#f8fafc';
-              ctx.fillText(evaluation.activeKey.id, fx + 14, fy - 6);
-            }
+            // Finger label + note info
+            const fingerPrefix = isLeft ? 'L' : 'R';
+            const shortName = finger.fingerName.slice(0, 3).toUpperCase();
+            const noteText = finger.currentKey ? ` ${finger.currentKey.id}` : '';
+            const tag = `${fingerPrefix}-${shortName}${noteText}`;
+
+            ctx.font = '700 11px JetBrains Mono, monospace';
+            ctx.fillStyle = isPressed ? '#10b981' : '#f8fafc';
+            ctx.fillText(tag, fx + 12, fy - 6);
           }
 
           ctx.restore();
@@ -311,7 +412,7 @@ export const App: React.FC = () => {
           <div>
             <h1 className="brand-title">Virtual Piano</h1>
           </div>
-          <span className="badge">Slice 2: 88 Keys</span>
+          <span className="badge">Slice 3: Two-Hand 10-Finger</span>
         </div>
 
         <div className="status-indicators">
@@ -321,11 +422,11 @@ export const App: React.FC = () => {
           </div>
           <div className="indicator">
             <span className={`dot ${modelReady ? 'active' : ''}`} />
-            <span>Hand Tracker</span>
+            <span>2-Hand Tracker</span>
           </div>
           <div className="indicator">
             <span className={`dot ${audioReady ? 'active' : ''}`} />
-            <span>Tone.js Polyphony</span>
+            <span>Tone.js 32-Poly</span>
           </div>
         </div>
       </header>
@@ -354,9 +455,9 @@ export const App: React.FC = () => {
 
           {!isRunning && (
             <div className="overlay-start">
-              <h2>88-Key Virtual Piano</h2>
+              <h2>Two-Hand 10-Finger Virtual Piano</h2>
               <p>
-                Experience real-time camera hand tracking across 88 keys, or play directly with your mouse, touch, or QWERTY keyboard.
+                Track both hands simultaneously with full 10-finger polyphony and jitter smoothing across all 88 keys.
               </p>
               <button
                 className="btn-primary"
@@ -372,15 +473,44 @@ export const App: React.FC = () => {
         {/* Right: Sidebar Telemetry & Chord Tester */}
         <aside className="sidebar-panel">
           <div className="panel-card">
-            <h3>Polyphonic Telemetry</h3>
+            <h3>Two-Hand Tracking</h3>
             <div className="telemetry-grid">
+              <div className="metric-box">
+                <div className="metric-label">Left Hand</div>
+                <div
+                  className="metric-value"
+                  style={{
+                    color: leftHandDetected ? '#22d3ee' : 'var(--text-muted)',
+                    fontSize: '1rem',
+                  }}
+                >
+                  {leftHandDetected ? 'Active ●' : 'Off'}
+                </div>
+              </div>
+              <div className="metric-box">
+                <div className="metric-label">Right Hand</div>
+                <div
+                  className="metric-value"
+                  style={{
+                    color: rightHandDetected ? '#fbbf24' : 'var(--text-muted)',
+                    fontSize: '1rem',
+                  }}
+                >
+                  {rightHandDetected ? 'Active ●' : 'Off'}
+                </div>
+              </div>
+            </div>
+
+            <div className="telemetry-grid">
+              <div className="metric-box">
+                <div className="metric-label">Active Fingers</div>
+                <div className="metric-value">
+                  {activeFingersCount} <span style={{ fontSize: '0.8rem', color: 'var(--text-muted)' }}>/ 10</span>
+                </div>
+              </div>
               <div className="metric-box">
                 <div className="metric-label">Engine FPS</div>
                 <div className="metric-value">{fps}</div>
-              </div>
-              <div className="metric-box">
-                <div className="metric-label">Active Voices</div>
-                <div className="metric-value">{activeSoundingNotes.length}</div>
               </div>
             </div>
 
@@ -403,33 +533,41 @@ export const App: React.FC = () => {
               </div>
             </div>
 
-            <div className="telemetry-grid">
-              <div className="metric-box">
-                <div className="metric-label">Key State</div>
-                <div className={`state-badge state-${keyState}`} style={{ marginTop: '0.2rem' }}>
-                  {keyState}
-                </div>
+            {/* Fingertips Status Strip */}
+            <div>
+              <div className="metric-label" style={{ marginBottom: '0.4rem' }}>
+                Tracked Fingers ({trackedFingersList.length})
               </div>
-              <div className="metric-box">
-                <div className="metric-label">Depth (z)</div>
-                <div className="metric-value" style={{ fontSize: '0.95rem' }}>
-                  {currentFingertip ? currentFingertip.z.toFixed(3) : '—'}
-                </div>
-              </div>
-            </div>
-
-            <div className="telemetry-grid">
-              <div className="metric-box">
-                <div className="metric-label">Hand Detected</div>
-                <div className="metric-value" style={{ fontSize: '0.95rem' }}>
-                  {handDetected ? 'Yes' : 'No'}
-                </div>
-              </div>
-              <div className="metric-box">
-                <div className="metric-label">Current Note</div>
-                <div className="metric-value" style={{ fontSize: '0.95rem' }}>
-                  {lastTriggeredNote}
-                </div>
+              <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.35rem' }}>
+                {trackedFingersList.map((f) => {
+                  const isLeft = f.handSide === 'Left';
+                  const isPressed = f.state === 'PRESSED';
+                  return (
+                    <span
+                      key={f.id}
+                      style={{
+                        fontSize: '0.7rem',
+                        fontFamily: 'var(--font-mono)',
+                        padding: '0.2rem 0.45rem',
+                        borderRadius: '6px',
+                        background: isPressed
+                          ? 'rgba(16, 185, 129, 0.25)'
+                          : isLeft
+                          ? 'rgba(6, 182, 212, 0.15)'
+                          : 'rgba(245, 158, 11, 0.15)',
+                        color: isPressed ? '#34d399' : isLeft ? '#67e8f9' : '#fcd34d',
+                        border: isPressed
+                          ? '1px solid #10b981'
+                          : isLeft
+                          ? '1px solid rgba(6, 182, 212, 0.3)'
+                          : '1px solid rgba(245, 158, 11, 0.3)',
+                      }}
+                    >
+                      {isLeft ? 'L' : 'R'}:{f.fingerName.slice(0, 3)}
+                      {f.pressedKey ? `(${f.pressedKey.id})` : ''}
+                    </span>
+                  );
+                })}
               </div>
             </div>
 
@@ -446,7 +584,7 @@ export const App: React.FC = () => {
 
           {/* Polyphony Quick Audition Card */}
           <div className="panel-card">
-            <h3>Chord Audition (Polyphony)</h3>
+            <h3>Polyphony Quick Audition</h3>
             <p style={{ fontSize: '0.8rem', color: 'var(--text-secondary)' }}>
               Test multi-voice chords without audio clipping:
             </p>
