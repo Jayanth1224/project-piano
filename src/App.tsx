@@ -559,6 +559,116 @@ export const App: React.FC = () => {
               </div>
             </div>
 
+            {/* Quick Tabletop Alignment Nudge Bar */}
+            <div style={{ marginTop: '0.6rem', padding: '0.6rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>
+              <div style={{ fontSize: '0.75rem', fontWeight: 600, color: 'var(--text-secondary)', marginBottom: '0.4rem', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <span>🎹 Keyboard Position</span>
+                <span style={{ fontSize: '0.7rem', color: '#38bdf8', fontFamily: 'var(--font-mono)' }}>
+                  y: {Math.round(calibration.yMin * 100)}%–{Math.round(calibration.yMax * 100)}%
+                </span>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '0.4rem' }}>
+                <button
+                  className="btn-secondary"
+                  style={{
+                    fontSize: '0.72rem',
+                    padding: '0.35rem 0.4rem',
+                    justifyContent: 'center',
+                    background: calibration.yMin >= 0.70 ? 'rgba(56, 189, 248, 0.15)' : undefined,
+                    borderColor: calibration.yMin >= 0.70 ? '#38bdf8' : undefined,
+                  }}
+                  onClick={() => {
+                    const next = { ...calibration, yMin: 0.72, yMax: 0.98, isCalibrated: true };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Snap keyboard to table surface at the bottom"
+                >
+                  🏢 Desk Surface
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: '0.72rem', padding: '0.35rem 0.4rem', justifyContent: 'center' }}
+                  onClick={() => {
+                    const next = { ...calibration, yMin: 0.58, yMax: 0.88, isCalibrated: true };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Move keyboard to mid-air floating position"
+                >
+                  ✨ Mid-Air
+                </button>
+              </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: '0.3rem', marginTop: '0.4rem' }}>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: '0.7rem', padding: '0.3rem 0.1rem', justifyContent: 'center' }}
+                  onClick={() => {
+                    const next = {
+                      ...calibration,
+                      yMin: Math.max(0.20, Number((calibration.yMin - 0.03).toFixed(2))),
+                      yMax: Math.max(0.35, Number((calibration.yMax - 0.03).toFixed(2))),
+                      isCalibrated: true,
+                    };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Nudge keyboard upward"
+                >
+                  ⬆ Up
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: '0.7rem', padding: '0.3rem 0.1rem', justifyContent: 'center' }}
+                  onClick={() => {
+                    const next = {
+                      ...calibration,
+                      yMin: Math.min(0.80, Number((calibration.yMin + 0.03).toFixed(2))),
+                      yMax: Math.min(0.99, Number((calibration.yMax + 0.03).toFixed(2))),
+                      isCalibrated: true,
+                    };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Nudge keyboard downward"
+                >
+                  ⬇ Down
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: '0.7rem', padding: '0.3rem 0.1rem', justifyContent: 'center' }}
+                  onClick={() => {
+                    const next = {
+                      ...calibration,
+                      yMin: Math.max(0.20, Number((calibration.yMin - 0.03).toFixed(2))),
+                      isCalibrated: true,
+                    };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Make keyboard taller"
+                >
+                  ↕ Tall
+                </button>
+                <button
+                  className="btn-secondary"
+                  style={{ fontSize: '0.7rem', padding: '0.3rem 0.1rem', justifyContent: 'center' }}
+                  onClick={() => {
+                    const next = {
+                      ...calibration,
+                      yMin: Math.min(calibration.yMax - 0.15, Number((calibration.yMin + 0.03).toFixed(2))),
+                      isCalibrated: true,
+                    };
+                    setCalibration(next);
+                    calibrationService.saveCalibration(next);
+                  }}
+                  title="Make keyboard shorter"
+                >
+                  ↕ Short
+                </button>
+              </div>
+            </div>
+
             <div className="telemetry-grid">
               <div className="metric-box">
                 <div className="metric-label">Left Hand</div>

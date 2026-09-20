@@ -11,10 +11,10 @@ export interface PianoCalibration {
 }
 
 export const DEFAULT_CALIBRATION: PianoCalibration = {
-  xMin: 0.03,
-  xMax: 0.97,
-  yMin: 0.68,
-  yMax: 0.96,
+  xMin: 0.04,
+  xMax: 0.96,
+  yMin: 0.72,
+  yMax: 0.98,
   depthReference: -0.035,
   pressOffset: -0.018, // press at z <= -0.053
   releaseOffset: -0.005, // release at z >= -0.040
@@ -22,7 +22,7 @@ export const DEFAULT_CALIBRATION: PianoCalibration = {
   updatedAt: 0,
 };
 
-export const CALIBRATION_STORAGE_KEY = 'virtual_piano_calibration_v1';
+export const CALIBRATION_STORAGE_KEY = 'virtual_piano_calibration_v3';
 
 export class CalibrationService {
   private storageKey: string;

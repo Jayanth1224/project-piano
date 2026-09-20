@@ -249,13 +249,20 @@ export class MultiFingerEngine {
 
       // Knuckle-relative depth calculation
       const relativeZ = input.mcpPosition ? smoothed.z - input.mcpPosition.z : 0;
+      const isThumb = input.fingerName === 'thumb';
+
+      // Thumbs rest sideways on table with lower MCP offset, so use tuned thresholds
+      const knucklePressLimit = isThumb ? -0.040 : -0.024;
+      const knuckleLiftLimit = isThumb ? -0.018 : -0.010;
+
       // If fingertip is lifted above/near knuckle height, consider it lifted
-      const isKnuckleLifted = input.mcpPosition ? relativeZ > -0.010 : false;
+      const isKnuckleLifted = input.mcpPosition ? relativeZ > knuckleLiftLimit : false;
       // If fingertip extends down into desk below knuckle, consider it pressing
-      const isKnucklePressed = input.mcpPosition ? relativeZ <= -0.025 : false;
+      const isKnucklePressed = input.mcpPosition ? relativeZ <= knucklePressLimit : false;
 
       // Depth hysteresis checks: combines calibrated surface plane and knuckle arch
-      const isPastPressDepth = smoothed.z <= this.pressDepthThreshold || isKnucklePressed;
+      const isPastPressDepth =
+        (smoothed.z <= this.pressDepthThreshold || isKnucklePressed) && !isKnuckleLifted;
       const isAboveReleaseDepth = smoothed.z >= this.releaseDepthThreshold || isKnuckleLifted;
 
       if (tracker.pressedKey) {
@@ -277,7 +284,7 @@ export class MultiFingerEngine {
         }
       } else {
         // Finger was not holding a key
-        if (isPastPressDepth) {
+        if (isPastPressDepth && !isAboveReleaseDepth) {
           // Strike key
           tracker.pressedKey = hitKey;
           notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));

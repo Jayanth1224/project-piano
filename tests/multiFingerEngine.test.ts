@@ -192,3 +192,99 @@ test('MultiFingerEngine - calibrated resting surface prevents false presses whil
   assert.deepEqual(releaseResult.notesToRelease, ['C4'], 'Lifting finger off the desk MUST release the note');
   assert.equal(releaseResult.pressedKeys.length, 0);
 });
+
+test('MultiFingerEngine - resting hand and resting thumb with knuckle arch do not false-trigger notes', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const c4ScreenX = 0.05 + c4CenterX * 0.90;
+  const screenY = 0.75;
+
+  engine.applyCalibration({
+    xMin: 0.04,
+    xMax: 0.96,
+    yMin: 0.72,
+    yMax: 0.98,
+    depthReference: -0.035,
+    pressOffset: -0.018, // press at -0.053
+    releaseOffset: -0.005, // release at -0.040
+    isCalibrated: true,
+    updatedAt: 100,
+  });
+
+  // 1. Resting index finger on table: tip z = -0.032, knuckle z = -0.030 (relativeZ = -0.002 > -0.010, arched)
+  const restIndex = engine.processFrame(
+    [
+      {
+        id: 'Right_index',
+        handSide: 'Right',
+        fingerName: 'index',
+        rawPosition: { x: c4ScreenX, y: screenY, z: -0.032 },
+        mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+      },
+    ],
+    keys
+  );
+  assert.equal(restIndex.notesToTrigger.length, 0, 'Resting arched index finger must NOT trigger note');
+  assert.equal(restIndex.pressedKeys.length, 0);
+
+  // 2. Resting thumb on table: tip z = -0.035, knuckle z = -0.010 (relativeZ = -0.025)
+  // With thumb threshold tuned to -0.040, relativeZ of -0.025 MUST NOT trigger!
+  const restThumb = engine.processFrame(
+    [
+      {
+        id: 'Right_thumb',
+        handSide: 'Right',
+        fingerName: 'thumb',
+        rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 },
+        mcpPosition: { x: c4ScreenX, y: screenY - 0.06, z: -0.010 },
+      },
+    ],
+    keys
+  );
+  assert.equal(restThumb.notesToTrigger.length, 0, 'Resting thumb on desk must NOT false-trigger note');
+  assert.equal(restThumb.pressedKeys.length, 0);
+
+  // 3. Active index finger press into desk: tip z = -0.060, knuckle z = -0.030 (relativeZ = -0.030 <= -0.024)
+  let strikeResult;
+  for (let i = 0; i < 3; i++) {
+    strikeResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: c4ScreenX, y: screenY, z: -0.060 },
+          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+        },
+      ],
+      keys
+    );
+  }
+  assert.equal(strikeResult!.pressedKeys.length, 1, 'Active finger press down MUST trigger note');
+  assert.equal(strikeResult!.pressedKeys[0].id, 'C4');
+
+  // 4. Lift index finger off desk: tip z = -0.030, knuckle z = -0.030 (relativeZ = 0.0 > -0.010)
+  let releaseEmitted = false;
+  let finalResult;
+  for (let i = 0; i < 3; i++) {
+    finalResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: c4ScreenX, y: screenY, z: -0.030 },
+          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+        },
+      ],
+      keys
+    );
+    if (finalResult.notesToRelease.includes('C4')) {
+      releaseEmitted = true;
+    }
+  }
+  assert.ok(releaseEmitted, 'Lifting finger off desk key MUST release note');
+  assert.equal(finalResult!.pressedKeys.length, 0);
+});
+

@@ -49,10 +49,10 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
     if (type === 'desk') {
       setCal((prev) => ({
         ...prev,
-        xMin: 0.03,
-        xMax: 0.97,
-        yMin: 0.68,
-        yMax: 0.96,
+        xMin: 0.04,
+        xMax: 0.96,
+        yMin: 0.72,
+        yMax: 0.98,
         depthReference: -0.035,
         pressOffset: -0.018,
         releaseOffset: -0.005,
@@ -241,12 +241,16 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
                 <input
                   type="range"
                   min="0.30"
-                  max="0.75"
+                  max="0.80"
                   step="0.02"
                   value={cal.yMin}
                   onChange={(e) => {
                     const val = parseFloat(e.target.value);
-                    setCal((prev) => ({ ...prev, yMin: val, yMax: Math.max(val + 0.15, prev.yMax) }));
+                    setCal((prev) => ({
+                      ...prev,
+                      yMin: val,
+                      yMax: Math.min(0.99, Math.max(val + 0.15, prev.yMax)),
+                    }));
                   }}
                   style={{ width: '100%' }}
                 />
