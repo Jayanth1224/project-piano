@@ -11,6 +11,7 @@ export interface FingertipInput {
   handSide: HandSide;
   fingerName: FingerName;
   rawPosition: Point3D;
+  mcpPosition?: Point3D; // Knuckle position for relative arch/lift detection
 }
 
 export interface FingerState {
@@ -22,6 +23,9 @@ export interface FingerState {
   pressedKey: PianoKey | null;
   rawPosition: Point3D;
   smoothedPosition: Point3D;
+  mcpPosition?: Point3D;
+  relativeZ: number;
+  isLifted: boolean;
   depthRatio: number;
   velocity: number;
 }
@@ -198,6 +202,9 @@ export class MultiFingerEngine {
           pressedKey: null,
           rawPosition: input.rawPosition,
           smoothedPosition: smoothed,
+          mcpPosition: input.mcpPosition,
+          relativeZ: 0,
+          isLifted: true,
           depthRatio: 0,
           velocity,
         });
@@ -231,20 +238,30 @@ export class MultiFingerEngine {
           pressedKey: null,
           rawPosition: input.rawPosition,
           smoothedPosition: smoothed,
+          mcpPosition: input.mcpPosition,
+          relativeZ: 0,
+          isLifted: true,
           depthRatio,
           velocity,
         });
         continue;
       }
 
-      // Depth hysteresis checks
-      const isPastPressDepth = smoothed.z <= this.pressDepthThreshold;
-      const isAboveReleaseDepth = smoothed.z >= this.releaseDepthThreshold;
+      // Knuckle-relative depth calculation
+      const relativeZ = input.mcpPosition ? smoothed.z - input.mcpPosition.z : 0;
+      // If fingertip is lifted above/near knuckle height, consider it lifted
+      const isKnuckleLifted = input.mcpPosition ? relativeZ > -0.010 : false;
+      // If fingertip extends down into desk below knuckle, consider it pressing
+      const isKnucklePressed = input.mcpPosition ? relativeZ <= -0.025 : false;
+
+      // Depth hysteresis checks: combines calibrated surface plane and knuckle arch
+      const isPastPressDepth = smoothed.z <= this.pressDepthThreshold || isKnucklePressed;
+      const isAboveReleaseDepth = smoothed.z >= this.releaseDepthThreshold || isKnuckleLifted;
 
       if (tracker.pressedKey) {
         // Finger was holding a key down
         if (isAboveReleaseDepth) {
-          // Finger lifted up past release threshold
+          // Finger lifted up past release threshold or curled up
           notesToReleaseSet.add(tracker.pressedKey.id);
           tracker.pressedKey = null;
           tracker.state = 'RELEASING';
@@ -279,6 +296,9 @@ export class MultiFingerEngine {
         pressedKey: tracker.pressedKey,
         rawPosition: input.rawPosition,
         smoothedPosition: smoothed,
+        mcpPosition: input.mcpPosition,
+        relativeZ,
+        isLifted: isAboveReleaseDepth,
         depthRatio,
         velocity,
       });

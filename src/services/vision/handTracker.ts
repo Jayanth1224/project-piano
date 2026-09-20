@@ -3,12 +3,12 @@ import { type Point3D } from '../piano/keyEngine.ts';
 import { type HandSide, type FingerName } from '../piano/multiFingerEngine.ts';
 import { EmaFilter3D } from './emaFilter.ts';
 
-export const FINGERTIP_LANDMARKS: { name: FingerName; index: number }[] = [
-  { name: 'thumb', index: 4 },
-  { name: 'index', index: 8 },
-  { name: 'middle', index: 12 },
-  { name: 'ring', index: 16 },
-  { name: 'pinky', index: 20 },
+export const FINGERTIP_LANDMARKS: { name: FingerName; tipIndex: number; mcpIndex: number }[] = [
+  { name: 'thumb', tipIndex: 4, mcpIndex: 2 },
+  { name: 'index', tipIndex: 8, mcpIndex: 5 },
+  { name: 'middle', tipIndex: 12, mcpIndex: 9 },
+  { name: 'ring', tipIndex: 16, mcpIndex: 13 },
+  { name: 'pinky', tipIndex: 20, mcpIndex: 17 },
 ];
 
 export interface TrackedFingertip {
@@ -16,8 +16,11 @@ export interface TrackedFingertip {
   handSide: HandSide;
   fingerName: FingerName;
   landmarkIndex: number;
+  mcpIndex: number;
   rawPosition: Point3D;
   smoothedPosition: Point3D;
+  rawMcpPosition: Point3D;
+  smoothedMcpPosition: Point3D;
 }
 
 export interface TrackedHand {
@@ -165,21 +168,28 @@ export class HandTrackerService {
         const fingertipList: TrackedFingertip[] = [];
 
         for (const ft of FINGERTIP_LANDMARKS) {
-          const rawPoint = landmarks[ft.index];
+          const rawPoint = landmarks[ft.tipIndex];
+          const rawMcp = landmarks[ft.mcpIndex] || landmarks[0];
           if (!rawPoint) continue;
 
           const id = `${handSide}_${ft.name}`;
+          const mcpId = `${handSide}_${ft.name}_mcp`;
           activeFingertipIds.add(id);
+          activeFingertipIds.add(mcpId);
 
           const smoothed = this.emaFilter.filter(id, rawPoint);
+          const smoothedMcp = this.emaFilter.filter(mcpId, rawMcp);
 
           const fingertip: TrackedFingertip = {
             id,
             handSide,
             fingerName: ft.name,
-            landmarkIndex: ft.index,
+            landmarkIndex: ft.tipIndex,
+            mcpIndex: ft.mcpIndex,
             rawPosition: rawPoint,
             smoothedPosition: smoothed,
+            rawMcpPosition: rawMcp,
+            smoothedMcpPosition: smoothedMcp,
           };
 
           fingertipsMap.set(ft.name, fingertip);

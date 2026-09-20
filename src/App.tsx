@@ -200,7 +200,7 @@ export const App: React.FC = () => {
           setLeftHandDetected(hasLeft);
           setRightHandDetected(hasRight);
 
-          // 2. Prepare Mirrored Fingertip Coordinates for MultiFingerEngine
+          // 2. Prepare Mirrored Fingertip & Knuckle Coordinates for MultiFingerEngine
           const fingertipInputs: FingertipInput[] = trackingResult.allFingertips.map((ft) => ({
             id: ft.id,
             handSide: ft.handSide,
@@ -209,6 +209,11 @@ export const App: React.FC = () => {
               x: 1 - ft.smoothedPosition.x, // Mirror horizontally for selfie view
               y: ft.smoothedPosition.y,
               z: ft.smoothedPosition.z,
+            },
+            mcpPosition: {
+              x: 1 - ft.smoothedMcpPosition.x,
+              y: ft.smoothedMcpPosition.y,
+              z: ft.smoothedMcpPosition.z,
             },
           }));
 
@@ -389,14 +394,29 @@ export const App: React.FC = () => {
             ctx.fill();
             ctx.shadowBlur = 0;
 
-            // Finger label + note info
+            // Finger arch bridge line from knuckle (MCP) to fingertip
+            if (finger.mcpPosition) {
+              const mx = finger.mcpPosition.x * width;
+              const my = finger.mcpPosition.y * height;
+              ctx.beginPath();
+              ctx.moveTo(mx, my);
+              ctx.lineTo(fx, fy);
+              ctx.strokeStyle = isPressed ? 'rgba(16, 185, 129, 0.6)' : 'rgba(255, 255, 255, 0.18)';
+              ctx.lineWidth = 1.5;
+              ctx.setLineDash([3, 3]);
+              ctx.stroke();
+              ctx.setLineDash([]);
+            }
+
+            // Finger label + note info + live state badge
             const fingerPrefix = isLeft ? 'L' : 'R';
             const shortName = finger.fingerName.slice(0, 3).toUpperCase();
             const noteText = finger.currentKey ? ` ${finger.currentKey.id}` : '';
-            const tag = `${fingerPrefix}-${shortName}${noteText}`;
+            const statusText = isPressed ? ' [DOWN ⬇]' : finger.isLifted ? ' [LIFT ⬆]' : ' [HOVER]';
+            const tag = `${fingerPrefix}-${shortName}${noteText}${statusText}`;
 
             ctx.font = '700 11px JetBrains Mono, monospace';
-            ctx.fillStyle = isPressed ? '#10b981' : '#f8fafc';
+            ctx.fillStyle = isPressed ? '#10b981' : finger.isLifted ? '#94a3b8' : '#f59e0b';
             ctx.fillText(tag, fx + 12, fy - 6);
           }
 

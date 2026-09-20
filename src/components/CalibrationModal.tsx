@@ -49,12 +49,15 @@ export const CalibrationModal: React.FC<CalibrationModalProps> = ({
     if (type === 'desk') {
       setCal((prev) => ({
         ...prev,
-        yMin: 0.58,
-        yMax: 0.88,
+        xMin: 0.03,
+        xMax: 0.97,
+        yMin: 0.68,
+        yMax: 0.96,
+        depthReference: -0.035,
         pressOffset: -0.018,
         releaseOffset: -0.005,
       }));
-      setCapturedMessage('Applied Desk Preset (Firm release, requires touching surface)');
+      setCapturedMessage('Applied Desk Preset (Anchored to table surface at bottom of screen)');
     } else if (type === 'air') {
       setCal((prev) => ({
         ...prev,

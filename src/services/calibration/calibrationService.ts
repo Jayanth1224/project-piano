@@ -11,13 +11,13 @@ export interface PianoCalibration {
 }
 
 export const DEFAULT_CALIBRATION: PianoCalibration = {
-  xMin: 0.04,
-  xMax: 0.96,
-  yMin: 0.58,
-  yMax: 0.88,
-  depthReference: -0.025,
-  pressOffset: -0.020, // press at z <= -0.045
-  releaseOffset: -0.005, // release at z >= -0.030
+  xMin: 0.03,
+  xMax: 0.97,
+  yMin: 0.68,
+  yMax: 0.96,
+  depthReference: -0.035,
+  pressOffset: -0.018, // press at z <= -0.053
+  releaseOffset: -0.005, // release at z >= -0.040
   isCalibrated: false,
   updatedAt: 0,
 };
