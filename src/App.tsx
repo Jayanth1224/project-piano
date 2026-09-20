@@ -523,6 +523,28 @@ export const App: React.FC = () => {
         <div className="status-indicators">
           <button
             className="btn-secondary"
+            onClick={() => {
+              calibrationService.clearAllCache();
+              const fresh = { ...DEFAULT_CALIBRATION };
+              setCalibration(fresh);
+              pianoAudio.stopAll();
+              multiFingerEngineRef.current.reset();
+              setActiveSoundingNotes([]);
+              setAnchorMessage('Cache cleared! Restored clean tabletop defaults.');
+              setTimeout(() => setAnchorMessage(null), 3500);
+            }}
+            style={{
+              padding: '0.4rem 0.7rem',
+              fontSize: '0.78rem',
+              border: '1px solid var(--border-subtle)',
+              color: 'var(--text-secondary)',
+            }}
+            title="Clear all browser storage cache and restore fresh tabletop defaults"
+          >
+            🧹 Clear Cache
+          </button>
+          <button
+            className="btn-secondary"
             onClick={() => setIsCalibrating(true)}
             style={{
               padding: '0.4rem 0.8rem',

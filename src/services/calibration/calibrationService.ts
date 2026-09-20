@@ -22,13 +22,56 @@ export const DEFAULT_CALIBRATION: PianoCalibration = {
   updatedAt: 0,
 };
 
-export const CALIBRATION_STORAGE_KEY = 'virtual_piano_calibration_v3';
+export const CALIBRATION_STORAGE_KEY = 'virtual_piano_calibration_v4';
 
 export class CalibrationService {
   private storageKey: string;
 
   constructor(storageKey = CALIBRATION_STORAGE_KEY) {
     this.storageKey = storageKey;
+    this.purgeLegacyCaches();
+  }
+
+  /**
+   * Purges older cached version keys from previous iterations
+   */
+  purgeLegacyCaches(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && k.startsWith('virtual_piano_calibration_') && k !== this.storageKey) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) {
+        localStorage.removeItem(k);
+      }
+    } catch {
+      // ignore
+    }
+  }
+
+  /**
+   * Completely clear all virtual piano cached data from storage.
+   */
+  clearAllCache(): void {
+    if (typeof localStorage === 'undefined') return;
+    try {
+      const keysToRemove: string[] = [];
+      for (let i = 0; i < localStorage.length; i++) {
+        const k = localStorage.key(i);
+        if (k && (k.startsWith('virtual_piano') || k.includes('calibration'))) {
+          keysToRemove.push(k);
+        }
+      }
+      for (const k of keysToRemove) {
+        localStorage.removeItem(k);
+      }
+    } catch {
+      // ignore
+    }
   }
 
   /**
