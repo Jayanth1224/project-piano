@@ -1,6 +1,7 @@
 import { type PianoKey, getKeyAtCoordinate } from './pianoModel.ts';
 import { type Point3D, type KeyState } from './keyEngine.ts';
 import { EmaFilter3D } from '../vision/emaFilter.ts';
+import { type PianoCalibration } from '../calibration/calibrationService.ts';
 
 export type HandSide = 'Left' | 'Right';
 export type FingerName = 'thumb' | 'index' | 'middle' | 'ring' | 'pinky';
@@ -10,6 +11,7 @@ export interface FingertipInput {
   handSide: HandSide;
   fingerName: FingerName;
   rawPosition: Point3D;
+  mcpPosition?: Point3D; // Knuckle position for relative arch/lift detection
 }
 
 export interface FingerState {
@@ -21,6 +23,9 @@ export interface FingerState {
   pressedKey: PianoKey | null;
   rawPosition: Point3D;
   smoothedPosition: Point3D;
+  mcpPosition?: Point3D;
+  relativeZ: number;
+  isLifted: boolean;
   depthRatio: number;
   velocity: number;
 }
@@ -87,6 +92,25 @@ export class MultiFingerEngine {
 
   setKeyboardArea(area: Partial<KeyboardArea>): void {
     this.keyboardArea = { ...this.keyboardArea, ...area };
+  }
+
+  applyCalibration(calibration: PianoCalibration): void {
+    this.keyboardArea = {
+      xMin: calibration.xMin,
+      xMax: calibration.xMax,
+      yMin: calibration.yMin,
+      yMax: calibration.yMax,
+    };
+    this.pressDepthThreshold = calibration.depthReference + calibration.pressOffset;
+    this.releaseDepthThreshold = calibration.depthReference + calibration.releaseOffset;
+  }
+
+  getThresholds(): { press: number; release: number } {
+    return { press: this.pressDepthThreshold, release: this.releaseDepthThreshold };
+  }
+
+  getKeyboardArea(): KeyboardArea {
+    return { ...this.keyboardArea };
   }
 
   /**
@@ -178,6 +202,9 @@ export class MultiFingerEngine {
           pressedKey: null,
           rawPosition: input.rawPosition,
           smoothedPosition: smoothed,
+          mcpPosition: input.mcpPosition,
+          relativeZ: 0,
+          isLifted: true,
           depthRatio: 0,
           velocity,
         });
@@ -211,36 +238,61 @@ export class MultiFingerEngine {
           pressedKey: null,
           rawPosition: input.rawPosition,
           smoothedPosition: smoothed,
+          mcpPosition: input.mcpPosition,
+          relativeZ: 0,
+          isLifted: true,
           depthRatio,
           velocity,
         });
         continue;
       }
 
-      // Depth hysteresis checks
-      const isPastPressDepth = smoothed.z <= this.pressDepthThreshold;
-      const isAboveReleaseDepth = smoothed.z >= this.releaseDepthThreshold;
+      // Knuckle-relative depth calculation
+      const relativeZ = input.mcpPosition ? smoothed.z - input.mcpPosition.z : 0;
+      const isThumb = input.fingerName === 'thumb';
+
+      // Thumbs rest sideways on table with lower MCP offset, so use tuned thresholds
+      const knucklePressLimit = isThumb ? -0.040 : -0.024;
+      const knuckleLiftLimit = isThumb ? -0.018 : -0.010;
+
+      // If fingertip is lifted above/near knuckle height, consider it lifted
+      const isKnuckleLifted = input.mcpPosition ? relativeZ > knuckleLiftLimit : false;
+      // If fingertip extends down into desk below knuckle, consider it pressing
+      const isKnucklePressed = input.mcpPosition ? relativeZ <= knucklePressLimit : false;
+
+      // Depth hysteresis checks: combines calibrated surface plane and knuckle arch
+      const isPastPressDepth =
+        (smoothed.z <= this.pressDepthThreshold || isKnucklePressed) && !isKnuckleLifted;
+      const isAboveReleaseDepth = smoothed.z >= this.releaseDepthThreshold || isKnuckleLifted;
 
       if (tracker.pressedKey) {
         // Finger was holding a key down
         if (isAboveReleaseDepth) {
-          // Finger lifted up past release threshold
+          // Finger lifted up past release threshold or curled up
           notesToReleaseSet.add(tracker.pressedKey.id);
           tracker.pressedKey = null;
           tracker.state = 'RELEASING';
         } else if (tracker.pressedKey.id !== hitKey.id && isPastPressDepth) {
-          // Finger slid across to an adjacent key while staying pressed down
-          notesToReleaseSet.add(tracker.pressedKey.id);
-          tracker.pressedKey = hitKey;
-          notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));
-          tracker.state = 'PRESSED';
+          // Never switch from a white key to a black key while held!
+          // When lifting a finger off the desk in perspective view, the finger drifts
+          // upwards on screen into the black key area. Switching here causes false black notes.
+          if (!tracker.pressedKey.isBlack && hitKey.isBlack) {
+            // Finger drifted into black key zone while lifting/holding white key: keep holding white key
+            tracker.state = 'PRESSED';
+          } else if (tracker.pressedKey.isBlack === hitKey.isBlack) {
+            // Horizontal sliding between same key types (e.g. glissando white-to-white)
+            notesToReleaseSet.add(tracker.pressedKey.id);
+            tracker.pressedKey = hitKey;
+            notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));
+            tracker.state = 'PRESSED';
+          }
         } else {
           // Still holding down the same key
           tracker.state = 'PRESSED';
         }
       } else {
         // Finger was not holding a key
-        if (isPastPressDepth) {
+        if (isPastPressDepth && !isAboveReleaseDepth) {
           // Strike key
           tracker.pressedKey = hitKey;
           notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));
@@ -259,6 +311,9 @@ export class MultiFingerEngine {
         pressedKey: tracker.pressedKey,
         rawPosition: input.rawPosition,
         smoothedPosition: smoothed,
+        mcpPosition: input.mcpPosition,
+        relativeZ,
+        isLifted: isAboveReleaseDepth,
         depthRatio,
         velocity,
       });

@@ -133,3 +133,231 @@ test('MultiFingerEngine - hand leaves camera frame releases active held notes', 
   assert.deepEqual(result.notesToRelease, ['C4']);
   assert.equal(result.pressedKeys.length, 0);
 });
+
+test('MultiFingerEngine - calibrated resting surface prevents false presses while hovering and releases naturally', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const c4ScreenX = 0.05 + c4CenterX * 0.90;
+  const screenY = 0.70;
+
+  // Apply calibration: resting surface is at z = -0.040
+  // pressThreshold = -0.040 + (-0.020) = -0.060
+  // releaseThreshold = -0.040 + (-0.006) = -0.046
+  engine.applyCalibration({
+    xMin: 0.05,
+    xMax: 0.95,
+    yMin: 0.55,
+    yMax: 0.90,
+    depthReference: -0.040,
+    pressOffset: -0.020,
+    releaseOffset: -0.006,
+    isCalibrated: true,
+    updatedAt: 100,
+  });
+
+  // Step 1: Hand enters keyboard hovering above the surface at z = -0.035
+  // Previously (without calibration), -0.035 was close to threshold and could cause sticking.
+  // With calibration, press threshold is -0.060, so -0.035 MUST NOT trigger!
+  const hoverResult = engine.processFrame(
+    [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 } }],
+    keys
+  );
+  assert.equal(hoverResult.notesToTrigger.length, 0, 'Hovering must NOT trigger notes');
+  assert.equal(hoverResult.pressedKeys.length, 0);
+
+  // Step 2: Push finger into the desk surface to z = -0.068 (past -0.060)
+  // Run 3 frames for EMA filter to track downward strike
+  let pressResult;
+  for (let i = 0; i < 3; i++) {
+    pressResult = engine.processFrame(
+      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.068 } }],
+      keys
+    );
+  }
+  assert.ok(pressResult);
+  assert.equal(pressResult.pressedKeys.length, 1, 'Pressing past calibrated surface MUST trigger note');
+  assert.equal(pressResult.pressedKeys[0].id, 'C4');
+
+  // Step 3: Lift finger up off the surface to z = -0.040 (above release threshold -0.046)
+  // Run 3 frames for EMA filter convergence
+  let releaseResult;
+  for (let i = 0; i < 3; i++) {
+    releaseResult = engine.processFrame(
+      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.040 } }],
+      keys
+    );
+  }
+  assert.ok(releaseResult);
+  assert.deepEqual(releaseResult.notesToRelease, ['C4'], 'Lifting finger off the desk MUST release the note');
+  assert.equal(releaseResult.pressedKeys.length, 0);
+});
+
+test('MultiFingerEngine - resting hand and resting thumb with knuckle arch do not false-trigger notes', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const c4ScreenX = 0.05 + c4CenterX * 0.90;
+  const screenY = 0.75;
+
+  engine.applyCalibration({
+    xMin: 0.04,
+    xMax: 0.96,
+    yMin: 0.72,
+    yMax: 0.98,
+    depthReference: -0.035,
+    pressOffset: -0.018, // press at -0.053
+    releaseOffset: -0.005, // release at -0.040
+    isCalibrated: true,
+    updatedAt: 100,
+  });
+
+  // 1. Resting index finger on table: tip z = -0.032, knuckle z = -0.030 (relativeZ = -0.002 > -0.010, arched)
+  const restIndex = engine.processFrame(
+    [
+      {
+        id: 'Right_index',
+        handSide: 'Right',
+        fingerName: 'index',
+        rawPosition: { x: c4ScreenX, y: screenY, z: -0.032 },
+        mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+      },
+    ],
+    keys
+  );
+  assert.equal(restIndex.notesToTrigger.length, 0, 'Resting arched index finger must NOT trigger note');
+  assert.equal(restIndex.pressedKeys.length, 0);
+
+  // 2. Resting thumb on table: tip z = -0.035, knuckle z = -0.010 (relativeZ = -0.025)
+  // With thumb threshold tuned to -0.040, relativeZ of -0.025 MUST NOT trigger!
+  const restThumb = engine.processFrame(
+    [
+      {
+        id: 'Right_thumb',
+        handSide: 'Right',
+        fingerName: 'thumb',
+        rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 },
+        mcpPosition: { x: c4ScreenX, y: screenY - 0.06, z: -0.010 },
+      },
+    ],
+    keys
+  );
+  assert.equal(restThumb.notesToTrigger.length, 0, 'Resting thumb on desk must NOT false-trigger note');
+  assert.equal(restThumb.pressedKeys.length, 0);
+
+  // 3. Active index finger press into desk: tip z = -0.060, knuckle z = -0.030 (relativeZ = -0.030 <= -0.024)
+  let strikeResult;
+  for (let i = 0; i < 3; i++) {
+    strikeResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: c4ScreenX, y: screenY, z: -0.060 },
+          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+        },
+      ],
+      keys
+    );
+  }
+  assert.equal(strikeResult!.pressedKeys.length, 1, 'Active finger press down MUST trigger note');
+  assert.equal(strikeResult!.pressedKeys[0].id, 'C4');
+
+  // 4. Lift index finger off desk: tip z = -0.030, knuckle z = -0.030 (relativeZ = 0.0 > -0.010)
+  let releaseEmitted = false;
+  let finalResult;
+  for (let i = 0; i < 3; i++) {
+    finalResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: c4ScreenX, y: screenY, z: -0.030 },
+          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
+        },
+      ],
+      keys
+    );
+    if (finalResult.notesToRelease.includes('C4')) {
+      releaseEmitted = true;
+    }
+  }
+  assert.ok(releaseEmitted, 'Lifting finger off desk key MUST release note');
+  assert.equal(finalResult!.pressedKeys.length, 0);
+});
+
+test('MultiFingerEngine - lifting finger from white key drifting into black key area does NOT trigger black key', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const cs4Key = keys.find((k) => k.id === 'C#4')!;
+
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const cs4CenterX = (cs4Key.xStart + cs4Key.xEnd) * 0.5;
+
+  const whiteScreenX = 0.05 + c4CenterX * 0.90;
+  const blackScreenX = 0.05 + cs4CenterX * 0.90;
+
+  const whiteScreenY = 0.55 + 0.85 * 0.35; // Bottom half of keyboard (white key area)
+  const blackScreenY = 0.55 + 0.35 * 0.35; // Top half of keyboard (black key area)
+
+  // Step 1: Strike C4 firmly
+  let pressResult;
+  for (let i = 0; i < 3; i++) {
+    pressResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: whiteScreenX, y: whiteScreenY, z: -0.06 },
+        },
+      ],
+      keys
+    );
+  }
+  assert.equal(pressResult!.pressedKeys.length, 1);
+  assert.equal(pressResult!.pressedKeys[0].id, 'C4');
+
+  // Step 2: Finger begins lifting and perspective causes (x, y) to drift upwards into C#4 black key area
+  // It MUST NOT switch to C#4!
+  const driftResult = engine.processFrame(
+    [
+      {
+        id: 'Right_index',
+        handSide: 'Right',
+        fingerName: 'index',
+        rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.05 },
+      },
+    ],
+    keys
+  );
+  assert.equal(driftResult.notesToTrigger.filter((n) => n.note === 'C#4').length, 0, 'Must NOT trigger black key C#4');
+  assert.equal(driftResult.pressedKeys[0]?.id, 'C4', 'Must remain locked to C4 while pressed');
+
+  // Step 3: Finger completes lift (z reaches release threshold)
+  let liftResult;
+  let releaseEmitted = false;
+  for (let i = 0; i < 3; i++) {
+    liftResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.01 },
+        },
+      ],
+      keys
+    );
+    if (liftResult.notesToRelease.includes('C4')) {
+      releaseEmitted = true;
+    }
+  }
+  assert.ok(releaseEmitted, 'Must emit C4 release');
+  assert.equal(liftResult!.notesToTrigger.length, 0);
+  assert.equal(liftResult!.pressedKeys.length, 0);
+});
+
+
