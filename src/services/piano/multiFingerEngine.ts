@@ -273,11 +273,19 @@ export class MultiFingerEngine {
           tracker.pressedKey = null;
           tracker.state = 'RELEASING';
         } else if (tracker.pressedKey.id !== hitKey.id && isPastPressDepth) {
-          // Finger slid across to an adjacent key while staying pressed down
-          notesToReleaseSet.add(tracker.pressedKey.id);
-          tracker.pressedKey = hitKey;
-          notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));
-          tracker.state = 'PRESSED';
+          // Never switch from a white key to a black key while held!
+          // When lifting a finger off the desk in perspective view, the finger drifts
+          // upwards on screen into the black key area. Switching here causes false black notes.
+          if (!tracker.pressedKey.isBlack && hitKey.isBlack) {
+            // Finger drifted into black key zone while lifting/holding white key: keep holding white key
+            tracker.state = 'PRESSED';
+          } else if (tracker.pressedKey.isBlack === hitKey.isBlack) {
+            // Horizontal sliding between same key types (e.g. glissando white-to-white)
+            notesToReleaseSet.add(tracker.pressedKey.id);
+            tracker.pressedKey = hitKey;
+            notesToTriggerMap.set(hitKey.id, Math.max(notesToTriggerMap.get(hitKey.id) || 0, velocity));
+            tracker.state = 'PRESSED';
+          }
         } else {
           // Still holding down the same key
           tracker.state = 'PRESSED';

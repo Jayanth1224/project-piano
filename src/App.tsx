@@ -59,10 +59,40 @@ export const App: React.FC = () => {
   const [activeSoundingNotes, setActiveSoundingNotes] = useState<string[]>([]);
   const [lastTriggeredNote, setLastTriggeredNote] = useState<string>('C4');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const [anchorMessage, setAnchorMessage] = useState<string | null>(null);
+
+  const latestFingertipsRef = useRef<{ z: number }[]>([]);
+  const autoAnchoredRef = useRef<boolean>(false);
+  const autoFrameCountRef = useRef<number>(0);
 
   // Apply calibration to multiFingerEngine whenever calibration changes
   useEffect(() => {
     multiFingerEngineRef.current.applyCalibration(calibration);
+  }, [calibration]);
+
+  // 1-Click quick desk surface anchor
+  const handleAnchorCurrentSurface = useCallback(() => {
+    const fingertips = latestFingertipsRef.current;
+    if (!fingertips || fingertips.length === 0) {
+      setAnchorMessage('No hands visible! Place hands resting on table.');
+      setTimeout(() => setAnchorMessage(null), 3000);
+      return;
+    }
+
+    const sorted = fingertips.map((f) => f.z).sort((a, b) => a - b);
+    const trimmed = sorted.length >= 4 ? sorted.slice(1, sorted.length - 1) : sorted;
+    const avgZ = Number((trimmed.reduce((acc, val) => acc + val, 0) / trimmed.length).toFixed(3));
+
+    const next: PianoCalibration = {
+      ...calibration,
+      depthReference: avgZ,
+      isCalibrated: true,
+      updatedAt: Date.now(),
+    };
+    setCalibration(next);
+    calibrationService.saveCalibration(next);
+    setAnchorMessage(`Desk surface anchored at z = ${avgZ}!`);
+    setTimeout(() => setAnchorMessage(null), 3500);
   }, [calibration]);
 
   // Note down handler (called by camera, touch, mouse, or QWERTY keyboard)
@@ -199,6 +229,39 @@ export const App: React.FC = () => {
           }
           setLeftHandDetected(hasLeft);
           setRightHandDetected(hasRight);
+
+          latestFingertipsRef.current = trackingResult.allFingertips.map((ft) => ({
+            z: ft.smoothedPosition.z,
+          }));
+
+          // Auto-anchor resting baseline if user has not yet calibrated and hands are detected
+          if (
+            !calibration.isCalibrated &&
+            !autoAnchoredRef.current &&
+            trackingResult.allFingertips.length >= 4
+          ) {
+            autoFrameCountRef.current = (autoFrameCountRef.current || 0) + 1;
+            if (autoFrameCountRef.current >= 45) {
+              autoAnchoredRef.current = true;
+              const sorted = trackingResult.allFingertips
+                .map((f) => f.smoothedPosition.z)
+                .sort((a, b) => a - b);
+              const trimmed = sorted.slice(1, sorted.length - 1);
+              const avgZ = Number(
+                (trimmed.reduce((acc, val) => acc + val, 0) / trimmed.length).toFixed(3)
+              );
+              const next: PianoCalibration = {
+                ...calibration,
+                depthReference: avgZ,
+                isCalibrated: true,
+                updatedAt: Date.now(),
+              };
+              setCalibration(next);
+              calibrationService.saveCalibration(next);
+              setAnchorMessage(`Auto-anchored table surface at z = ${avgZ}`);
+              setTimeout(() => setAnchorMessage(null), 3500);
+            }
+          }
 
           // 2. Prepare Mirrored Fingertip & Knuckle Coordinates for MultiFingerEngine
           const fingertipInputs: FingertipInput[] = trackingResult.allFingertips.map((ft) => ({
@@ -558,6 +621,41 @@ export const App: React.FC = () => {
                 </div>
               </div>
             </div>
+
+            {/* 1-Click Surface Calibration Button */}
+            <button
+              className="btn-primary"
+              style={{
+                width: '100%',
+                marginTop: '0.6rem',
+                padding: '0.45rem',
+                fontSize: '0.78rem',
+                justifyContent: 'center',
+                background: calibration.isCalibrated
+                  ? 'rgba(56, 189, 248, 0.15)'
+                  : 'linear-gradient(135deg, #0284c7 0%, #0369a1 100%)',
+                borderColor: '#38bdf8',
+                color: '#fff',
+              }}
+              onClick={handleAnchorCurrentSurface}
+            >
+              🎯 {calibration.isCalibrated ? 'Re-Anchor Table Surface' : 'Rest Hands & Anchor to Desk'}
+            </button>
+            {anchorMessage && (
+              <div
+                style={{
+                  marginTop: '0.4rem',
+                  fontSize: '0.72rem',
+                  color: '#38bdf8',
+                  background: 'rgba(56, 189, 248, 0.1)',
+                  padding: '0.3rem 0.6rem',
+                  borderRadius: '6px',
+                  textAlign: 'center',
+                }}
+              >
+                ✓ {anchorMessage}
+              </div>
+            )}
 
             {/* Quick Tabletop Alignment Nudge Bar */}
             <div style={{ marginTop: '0.6rem', padding: '0.6rem', background: 'rgba(255,255,255,0.03)', borderRadius: '8px', border: '1px solid var(--border-subtle)' }}>

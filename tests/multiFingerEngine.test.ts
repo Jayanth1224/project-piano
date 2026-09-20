@@ -288,3 +288,76 @@ test('MultiFingerEngine - resting hand and resting thumb with knuckle arch do no
   assert.equal(finalResult!.pressedKeys.length, 0);
 });
 
+test('MultiFingerEngine - lifting finger from white key drifting into black key area does NOT trigger black key', () => {
+  const engine = new MultiFingerEngine();
+  const c4Key = keys.find((k) => k.id === 'C4')!;
+  const cs4Key = keys.find((k) => k.id === 'C#4')!;
+
+  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
+  const cs4CenterX = (cs4Key.xStart + cs4Key.xEnd) * 0.5;
+
+  const whiteScreenX = 0.05 + c4CenterX * 0.90;
+  const blackScreenX = 0.05 + cs4CenterX * 0.90;
+
+  const whiteScreenY = 0.55 + 0.85 * 0.35; // Bottom half of keyboard (white key area)
+  const blackScreenY = 0.55 + 0.35 * 0.35; // Top half of keyboard (black key area)
+
+  // Step 1: Strike C4 firmly
+  let pressResult;
+  for (let i = 0; i < 3; i++) {
+    pressResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: whiteScreenX, y: whiteScreenY, z: -0.06 },
+        },
+      ],
+      keys
+    );
+  }
+  assert.equal(pressResult!.pressedKeys.length, 1);
+  assert.equal(pressResult!.pressedKeys[0].id, 'C4');
+
+  // Step 2: Finger begins lifting and perspective causes (x, y) to drift upwards into C#4 black key area
+  // It MUST NOT switch to C#4!
+  const driftResult = engine.processFrame(
+    [
+      {
+        id: 'Right_index',
+        handSide: 'Right',
+        fingerName: 'index',
+        rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.05 },
+      },
+    ],
+    keys
+  );
+  assert.equal(driftResult.notesToTrigger.filter((n) => n.note === 'C#4').length, 0, 'Must NOT trigger black key C#4');
+  assert.equal(driftResult.pressedKeys[0]?.id, 'C4', 'Must remain locked to C4 while pressed');
+
+  // Step 3: Finger completes lift (z reaches release threshold)
+  let liftResult;
+  let releaseEmitted = false;
+  for (let i = 0; i < 3; i++) {
+    liftResult = engine.processFrame(
+      [
+        {
+          id: 'Right_index',
+          handSide: 'Right',
+          fingerName: 'index',
+          rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.01 },
+        },
+      ],
+      keys
+    );
+    if (liftResult.notesToRelease.includes('C4')) {
+      releaseEmitted = true;
+    }
+  }
+  assert.ok(releaseEmitted, 'Must emit C4 release');
+  assert.equal(liftResult!.notesToTrigger.length, 0);
+  assert.equal(liftResult!.pressedKeys.length, 0);
+});
+
+
