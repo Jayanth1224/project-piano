@@ -3,12 +3,12 @@ import { type Point3D } from '../piano/keyEngine.ts';
 import { type HandSide, type FingerName } from '../piano/multiFingerEngine.ts';
 import { EmaFilter3D } from './emaFilter.ts';
 
-export const FINGERTIP_LANDMARKS: { name: FingerName; tipIndex: number; mcpIndex: number }[] = [
-  { name: 'thumb', tipIndex: 4, mcpIndex: 2 },
-  { name: 'index', tipIndex: 8, mcpIndex: 5 },
-  { name: 'middle', tipIndex: 12, mcpIndex: 9 },
-  { name: 'ring', tipIndex: 16, mcpIndex: 13 },
-  { name: 'pinky', tipIndex: 20, mcpIndex: 17 },
+export const FINGERTIP_LANDMARKS: { name: FingerName; tipIndex: number; dipIndex: number; mcpIndex: number }[] = [
+  { name: 'thumb', tipIndex: 4, dipIndex: 3, mcpIndex: 2 },
+  { name: 'index', tipIndex: 8, dipIndex: 7, mcpIndex: 5 },
+  { name: 'middle', tipIndex: 12, dipIndex: 11, mcpIndex: 9 },
+  { name: 'ring', tipIndex: 16, dipIndex: 15, mcpIndex: 13 },
+  { name: 'pinky', tipIndex: 20, dipIndex: 19, mcpIndex: 17 },
 ];
 
 export interface TrackedFingertip {
@@ -21,6 +21,7 @@ export interface TrackedFingertip {
   smoothedPosition: Point3D;
   rawMcpPosition: Point3D;
   smoothedMcpPosition: Point3D;
+  rawDipPosition: Point3D;
 }
 
 export interface TrackedHand {
@@ -170,6 +171,7 @@ export class HandTrackerService {
         for (const ft of FINGERTIP_LANDMARKS) {
           const rawPoint = landmarks[ft.tipIndex];
           const rawMcp = landmarks[ft.mcpIndex] || landmarks[0];
+          const rawDip = landmarks[ft.dipIndex] || rawMcp;
           if (!rawPoint) continue;
 
           const id = `${handSide}_${ft.name}`;
@@ -190,6 +192,7 @@ export class HandTrackerService {
             smoothedPosition: smoothed,
             rawMcpPosition: rawMcp,
             smoothedMcpPosition: smoothedMcp,
+            rawDipPosition: rawDip,
           };
 
           fingertipsMap.set(ft.name, fingertip);

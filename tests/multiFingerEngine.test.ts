@@ -4,146 +4,144 @@ import { MultiFingerEngine, type FingertipInput } from '../src/services/piano/mu
 import { generate88Keys } from '../src/services/piano/pianoModel.ts';
 
 const keys = generate88Keys();
+const KEYBOARD_X_START = 0.05;
+const KEYBOARD_WIDTH = 0.90;
 
-test('MultiFingerEngine - simultaneous two-hand chord triggering', () => {
-  const engine = new MultiFingerEngine();
+function screenX(note: string): number {
+  const key = keys.find((candidate) => candidate.id === note);
+  assert.ok(key, `Expected ${note} to exist`);
+  return KEYBOARD_X_START + ((key.xStart + key.xEnd) * 0.5) * KEYBOARD_WIDTH;
+}
 
-  // Find C3 (white key) and G4 (white key)
-  const c3Key = keys.find((k) => k.id === 'C3')!;
-  const g4Key = keys.find((k) => k.id === 'G4')!;
-
-  assert.ok(c3Key);
-  assert.ok(g4Key);
-
-  // Map key center to screen coordinates
-  const c3CenterX = (c3Key.xStart + c3Key.xEnd) * 0.5;
-  const g4CenterX = (g4Key.xStart + g4Key.xEnd) * 0.5;
-
-  const c3ScreenX = 0.05 + c3CenterX * 0.90;
-  const g4ScreenX = 0.05 + g4CenterX * 0.90;
-  const screenY = 0.55 + 0.75 * 0.35; // Lower half of key (white key zone)
-
-  const leftHandThumb: FingertipInput = {
-    id: 'Left_thumb',
-    handSide: 'Left',
-    fingerName: 'thumb',
-    rawPosition: { x: c3ScreenX, y: screenY, z: -0.06 }, // Pressed (z <= -0.045)
+function finger(
+  id: string,
+  note: string,
+  y: number,
+  z: number,
+  extra: Partial<FingertipInput> = {}
+): FingertipInput {
+  const [handSide, fingerName] = id.split('_') as [FingertipInput['handSide'], FingertipInput['fingerName']];
+  const position = { x: screenX(note), y, z };
+  return {
+    id,
+    handSide,
+    fingerName,
+    rawPosition: position,
+    displayPosition: position,
+    ...extra,
   };
+}
 
-  const rightHandIndex: FingertipInput = {
-    id: 'Right_index',
-    handSide: 'Right',
-    fingerName: 'index',
-    rawPosition: { x: g4ScreenX, y: screenY, z: -0.06 }, // Pressed (z <= -0.045)
-  };
+function process(engine: MultiFingerEngine, inputs: FingertipInput[]) {
+  return engine.processFrame(inputs, keys);
+}
 
-  const result = engine.processFrame([leftHandThumb, rightHandIndex], keys);
+function armAndStrike(engine: MultiFingerEngine, inputs: Array<{ id: string; note: string }>) {
+  process(engine, inputs.map(({ id, note }) => finger(id, note, 0.740, -0.010)));
+  process(engine, inputs.map(({ id, note }) => finger(id, note, 0.740, -0.010)));
+  process(engine, inputs.map(({ id, note }) => finger(id, note, 0.748, -0.035)));
+  return process(engine, inputs.map(({ id, note }) => finger(id, note, 0.756, -0.060)));
+}
 
-  assert.equal(result.notesToTrigger.length, 2);
-  const triggeredNotes = result.notesToTrigger.map((n) => n.note).sort();
-  assert.deepEqual(triggeredNotes, ['C3', 'G4']);
-  assert.equal(result.notesToRelease.length, 0);
-  assert.equal(result.pressedKeys.length, 2);
+test('MultiFingerEngine - requires a lifted-to-contact strike before playing a two-hand chord', () => {
+  const engine = new MultiFingerEngine();
+  const result = armAndStrike(engine, [
+    { id: 'Left_thumb', note: 'C3' },
+    { id: 'Right_index', note: 'G4' },
+  ]);
+
+  assert.deepEqual(result.notesToTrigger.map((trigger) => trigger.note).sort(), ['C3', 'G4']);
+  assert.deepEqual(result.pressedKeys.map((key) => key.id).sort(), ['C3', 'G4']);
 });
 
-test('MultiFingerEngine - independent hysteresis (one finger lifts, another stays pressed)', () => {
+test('MultiFingerEngine - releases one finger without releasing another finger on the same frame', () => {
   const engine = new MultiFingerEngine();
-  const c3Key = keys.find((k) => k.id === 'C3')!;
-  const g4Key = keys.find((k) => k.id === 'G4')!;
-  const c3CenterX = (c3Key.xStart + c3Key.xEnd) * 0.5;
-  const g4CenterX = (g4Key.xStart + g4Key.xEnd) * 0.5;
-  const c3ScreenX = 0.05 + c3CenterX * 0.90;
-  const g4ScreenX = 0.05 + g4CenterX * 0.90;
-  const screenY = 0.55 + 0.75 * 0.35;
+  armAndStrike(engine, [
+    { id: 'Left_thumb', note: 'C3' },
+    { id: 'Right_index', note: 'G4' },
+  ]);
 
-  // Frame 1: Both fingers pressed
-  engine.processFrame(
-    [
-      { id: 'Left_thumb', handSide: 'Left', fingerName: 'thumb', rawPosition: { x: c3ScreenX, y: screenY, z: -0.06 } },
-      { id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: g4ScreenX, y: screenY, z: -0.06 } },
-    ],
-    keys
-  );
+  const result = process(engine, [
+    finger('Left_thumb', 'C3', 0.710, -0.010),
+    finger('Right_index', 'G4', 0.756, -0.060),
+  ]);
 
-  // Frame 2..4: Left thumb lifts up past release threshold (z = -0.01), right index stays pressed (z = -0.06)
-  let result2;
-  for (let i = 0; i < 3; i++) {
-    result2 = engine.processFrame(
-      [
-        { id: 'Left_thumb', handSide: 'Left', fingerName: 'thumb', rawPosition: { x: c3ScreenX, y: screenY, z: -0.01 } },
-        { id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: g4ScreenX, y: screenY, z: -0.06 } },
-      ],
-      keys
-    );
-  }
-
-  assert.ok(result2);
-  assert.deepEqual(result2.notesToRelease, ['C3']);
-  assert.equal(result2.notesToTrigger.length, 0);
-  assert.equal(result2.pressedKeys.length, 1);
-  assert.equal(result2.pressedKeys[0].id, 'G4');
+  assert.deepEqual(result.notesToRelease, ['C3']);
+  assert.deepEqual(result.pressedKeys.map((key) => key.id), ['G4']);
 });
 
-test('MultiFingerEngine - sliding from one key to another while pressed', () => {
+test('MultiFingerEngine - supports a white-key glissando while the finger remains pressed', () => {
   const engine = new MultiFingerEngine();
-  const c4Key = keys.find((k) => k.id === 'C4')!;
-  const d4Key = keys.find((k) => k.id === 'D4')!;
-  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
-  const d4CenterX = (d4Key.xStart + d4Key.xEnd) * 0.5;
-  const c4ScreenX = 0.05 + c4CenterX * 0.90;
-  const d4ScreenX = 0.05 + d4CenterX * 0.90;
-  const screenY = 0.55 + 0.75 * 0.35;
+  armAndStrike(engine, [{ id: 'Right_index', note: 'C4' }]);
 
-  // Frame 1: Press on C4
-  engine.processFrame(
-    [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.06 } }],
-    keys
-  );
+  const result = process(engine, [finger('Right_index', 'D4', 0.756, -0.060)]);
 
-  // Frame 2..6: Slide to D4 while keeping z pressed
-  let finalResult;
-  for (let i = 0; i < 6; i++) {
-    finalResult = engine.processFrame(
-      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: d4ScreenX, y: screenY, z: -0.06 } }],
-      keys
-    );
-  }
-
-  assert.ok(finalResult);
-  assert.equal(finalResult.pressedKeys.length, 1);
-  assert.equal(finalResult.pressedKeys[0].id, 'D4');
+  assert.deepEqual(result.notesToRelease, ['C4']);
+  assert.deepEqual(result.notesToTrigger.map((trigger) => trigger.note), ['D4']);
+  assert.deepEqual(result.pressedKeys.map((key) => key.id), ['D4']);
 });
 
-test('MultiFingerEngine - hand leaves camera frame releases active held notes', () => {
+test('MultiFingerEngine - releases a note when a tracked hand disappears', () => {
   const engine = new MultiFingerEngine();
-  const c4Key = keys.find((k) => k.id === 'C4')!;
-  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
-  const c4ScreenX = 0.05 + c4CenterX * 0.90;
-  const screenY = 0.55 + 0.75 * 0.35;
+  armAndStrike(engine, [{ id: 'Left_index', note: 'C4' }]);
 
-  // Frame 1: Holding C4
-  engine.processFrame(
-    [{ id: 'Left_index', handSide: 'Left', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.06 } }],
-    keys
-  );
-
-  // Frame 2: Hand vanished (empty inputs)
-  const result = engine.processFrame([], keys);
+  const result = process(engine, []);
 
   assert.deepEqual(result.notesToRelease, ['C4']);
   assert.equal(result.pressedKeys.length, 0);
 });
 
-test('MultiFingerEngine - calibrated resting surface prevents false presses while hovering and releases naturally', () => {
+test('MultiFingerEngine - leaving the keyboard releases and requires a new lifted strike', () => {
   const engine = new MultiFingerEngine();
-  const c4Key = keys.find((k) => k.id === 'C4')!;
-  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
-  const c4ScreenX = 0.05 + c4CenterX * 0.90;
-  const screenY = 0.70;
+  armAndStrike(engine, [{ id: 'Left_index', note: 'C4' }]);
 
-  // Apply calibration: resting surface is at z = -0.040
-  // pressThreshold = -0.040 + (-0.020) = -0.060
-  // releaseThreshold = -0.040 + (-0.006) = -0.046
+  const exit = process(engine, [finger('Left_index', 'C4', 0.950, -0.060)]);
+  const firstAfterExit = armAndStrike(engine, [{ id: 'Left_index', note: 'C4' }]);
+
+  assert.deepEqual(exit.notesToRelease, ['C4']);
+  assert.deepEqual(firstAfterExit.notesToTrigger.map((trigger) => trigger.note), ['C4']);
+});
+
+test('MultiFingerEngine - initial deep detection and a one-frame tracking loss cannot play a note', () => {
+  const engine = new MultiFingerEngine();
+
+  const firstDetection = process(engine, [finger('Right_index', 'C4', 0.756, -0.060)]);
+  const lost = process(engine, []);
+  const reacquired = process(engine, [finger('Right_index', 'C4', 0.756, -0.060)]);
+
+  assert.equal(firstDetection.notesToTrigger.length, 0);
+  assert.equal(lost.notesToRelease.length, 0);
+  assert.equal(reacquired.notesToTrigger.length, 0);
+});
+
+test('MultiFingerEngine - lifted tip drifting into a black key never re-triggers, even after settling', () => {
+  const engine = new MultiFingerEngine();
+  armAndStrike(engine, [{ id: 'Right_index', note: 'C4' }]);
+
+  const lift = process(engine, [finger('Right_index', 'C#4', 0.650, -0.010)]);
+  assert.deepEqual(lift.notesToRelease, ['C4']);
+
+  for (let frame = 0; frame < 60; frame++) {
+    const settling = process(engine, [finger('Right_index', 'C#4', 0.650, frame % 2 ? -0.048 : -0.046)]);
+    assert.equal(settling.notesToTrigger.length, 0, `Frame ${frame} must not trigger C#4`);
+    assert.equal(settling.pressedKeys.length, 0);
+  }
+});
+
+test('MultiFingerEngine - noisy depth alone cannot imitate a downward strike', () => {
+  const engine = new MultiFingerEngine();
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.010)]);
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.010)]);
+
+  for (const z of [-0.044, -0.047, -0.043, -0.049, -0.045, -0.048]) {
+    const result = process(engine, [finger('Right_index', 'C4', 0.740, z)]);
+    assert.equal(result.notesToTrigger.length, 0);
+    assert.equal(result.pressedKeys.length, 0);
+  }
+});
+
+test('MultiFingerEngine - calibrated threshold still accepts a deliberate descending strike', () => {
+  const engine = new MultiFingerEngine();
   engine.applyCalibration({
     xMin: 0.05,
     xMax: 0.95,
@@ -156,208 +154,24 @@ test('MultiFingerEngine - calibrated resting surface prevents false presses whil
     updatedAt: 100,
   });
 
-  // Step 1: Hand enters keyboard hovering above the surface at z = -0.035
-  // Previously (without calibration), -0.035 was close to threshold and could cause sticking.
-  // With calibration, press threshold is -0.060, so -0.035 MUST NOT trigger!
-  const hoverResult = engine.processFrame(
-    [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 } }],
-    keys
-  );
-  assert.equal(hoverResult.notesToTrigger.length, 0, 'Hovering must NOT trigger notes');
-  assert.equal(hoverResult.pressedKeys.length, 0);
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.035)]);
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.035)]);
+  process(engine, [finger('Right_index', 'C4', 0.748, -0.050)]);
+  const result = process(engine, [finger('Right_index', 'C4', 0.756, -0.065)]);
 
-  // Step 2: Push finger into the desk surface to z = -0.068 (past -0.060)
-  // Run 3 frames for EMA filter to track downward strike
-  let pressResult;
-  for (let i = 0; i < 3; i++) {
-    pressResult = engine.processFrame(
-      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.068 } }],
-      keys
-    );
-  }
-  assert.ok(pressResult);
-  assert.equal(pressResult.pressedKeys.length, 1, 'Pressing past calibrated surface MUST trigger note');
-  assert.equal(pressResult.pressedKeys[0].id, 'C4');
-
-  // Step 3: Lift finger up off the surface to z = -0.040 (above release threshold -0.046)
-  // Run 3 frames for EMA filter convergence
-  let releaseResult;
-  for (let i = 0; i < 3; i++) {
-    releaseResult = engine.processFrame(
-      [{ id: 'Right_index', handSide: 'Right', fingerName: 'index', rawPosition: { x: c4ScreenX, y: screenY, z: -0.040 } }],
-      keys
-    );
-  }
-  assert.ok(releaseResult);
-  assert.deepEqual(releaseResult.notesToRelease, ['C4'], 'Lifting finger off the desk MUST release the note');
-  assert.equal(releaseResult.pressedKeys.length, 0);
+  assert.deepEqual(result.notesToTrigger.map((trigger) => trigger.note), ['C4']);
+  assert.deepEqual(result.pressedKeys.map((key) => key.id), ['C4']);
 });
 
-test('MultiFingerEngine - resting hand and resting thumb with knuckle arch do not false-trigger notes', () => {
+test('MultiFingerEngine - an extended finger tip cannot count as contact', () => {
   const engine = new MultiFingerEngine();
-  const c4Key = keys.find((k) => k.id === 'C4')!;
-  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
-  const c4ScreenX = 0.05 + c4CenterX * 0.90;
-  const screenY = 0.75;
+  const dipPosition = { x: screenX('C4'), y: 0.758, z: -0.040 };
 
-  engine.applyCalibration({
-    xMin: 0.04,
-    xMax: 0.96,
-    yMin: 0.72,
-    yMax: 0.98,
-    depthReference: -0.035,
-    pressOffset: -0.018, // press at -0.053
-    releaseOffset: -0.005, // release at -0.040
-    isCalibrated: true,
-    updatedAt: 100,
-  });
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.010, { dipPosition })]);
+  process(engine, [finger('Right_index', 'C4', 0.740, -0.010, { dipPosition })]);
+  process(engine, [finger('Right_index', 'C4', 0.748, -0.035, { dipPosition })]);
+  const result = process(engine, [finger('Right_index', 'C4', 0.756, -0.060, { dipPosition })]);
 
-  // 1. Resting index finger on table: tip z = -0.032, knuckle z = -0.030 (relativeZ = -0.002 > -0.010, arched)
-  const restIndex = engine.processFrame(
-    [
-      {
-        id: 'Right_index',
-        handSide: 'Right',
-        fingerName: 'index',
-        rawPosition: { x: c4ScreenX, y: screenY, z: -0.032 },
-        mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
-      },
-    ],
-    keys
-  );
-  assert.equal(restIndex.notesToTrigger.length, 0, 'Resting arched index finger must NOT trigger note');
-  assert.equal(restIndex.pressedKeys.length, 0);
-
-  // 2. Resting thumb on table: tip z = -0.035, knuckle z = -0.010 (relativeZ = -0.025)
-  // With thumb threshold tuned to -0.040, relativeZ of -0.025 MUST NOT trigger!
-  const restThumb = engine.processFrame(
-    [
-      {
-        id: 'Right_thumb',
-        handSide: 'Right',
-        fingerName: 'thumb',
-        rawPosition: { x: c4ScreenX, y: screenY, z: -0.035 },
-        mcpPosition: { x: c4ScreenX, y: screenY - 0.06, z: -0.010 },
-      },
-    ],
-    keys
-  );
-  assert.equal(restThumb.notesToTrigger.length, 0, 'Resting thumb on desk must NOT false-trigger note');
-  assert.equal(restThumb.pressedKeys.length, 0);
-
-  // 3. Active index finger press into desk: tip z = -0.060, knuckle z = -0.030 (relativeZ = -0.030 <= -0.024)
-  let strikeResult;
-  for (let i = 0; i < 3; i++) {
-    strikeResult = engine.processFrame(
-      [
-        {
-          id: 'Right_index',
-          handSide: 'Right',
-          fingerName: 'index',
-          rawPosition: { x: c4ScreenX, y: screenY, z: -0.060 },
-          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
-        },
-      ],
-      keys
-    );
-  }
-  assert.equal(strikeResult!.pressedKeys.length, 1, 'Active finger press down MUST trigger note');
-  assert.equal(strikeResult!.pressedKeys[0].id, 'C4');
-
-  // 4. Lift index finger off desk: tip z = -0.030, knuckle z = -0.030 (relativeZ = 0.0 > -0.010)
-  let releaseEmitted = false;
-  let finalResult;
-  for (let i = 0; i < 3; i++) {
-    finalResult = engine.processFrame(
-      [
-        {
-          id: 'Right_index',
-          handSide: 'Right',
-          fingerName: 'index',
-          rawPosition: { x: c4ScreenX, y: screenY, z: -0.030 },
-          mcpPosition: { x: c4ScreenX, y: screenY - 0.08, z: -0.030 },
-        },
-      ],
-      keys
-    );
-    if (finalResult.notesToRelease.includes('C4')) {
-      releaseEmitted = true;
-    }
-  }
-  assert.ok(releaseEmitted, 'Lifting finger off desk key MUST release note');
-  assert.equal(finalResult!.pressedKeys.length, 0);
+  assert.equal(result.notesToTrigger.length, 0);
+  assert.equal(result.pressedKeys.length, 0);
 });
-
-test('MultiFingerEngine - lifting finger from white key drifting into black key area does NOT trigger black key', () => {
-  const engine = new MultiFingerEngine();
-  const c4Key = keys.find((k) => k.id === 'C4')!;
-  const cs4Key = keys.find((k) => k.id === 'C#4')!;
-
-  const c4CenterX = (c4Key.xStart + c4Key.xEnd) * 0.5;
-  const cs4CenterX = (cs4Key.xStart + cs4Key.xEnd) * 0.5;
-
-  const whiteScreenX = 0.05 + c4CenterX * 0.90;
-  const blackScreenX = 0.05 + cs4CenterX * 0.90;
-
-  const whiteScreenY = 0.55 + 0.85 * 0.35; // Bottom half of keyboard (white key area)
-  const blackScreenY = 0.55 + 0.35 * 0.35; // Top half of keyboard (black key area)
-
-  // Step 1: Strike C4 firmly
-  let pressResult;
-  for (let i = 0; i < 3; i++) {
-    pressResult = engine.processFrame(
-      [
-        {
-          id: 'Right_index',
-          handSide: 'Right',
-          fingerName: 'index',
-          rawPosition: { x: whiteScreenX, y: whiteScreenY, z: -0.06 },
-        },
-      ],
-      keys
-    );
-  }
-  assert.equal(pressResult!.pressedKeys.length, 1);
-  assert.equal(pressResult!.pressedKeys[0].id, 'C4');
-
-  // Step 2: Finger begins lifting and perspective causes (x, y) to drift upwards into C#4 black key area
-  // It MUST NOT switch to C#4!
-  const driftResult = engine.processFrame(
-    [
-      {
-        id: 'Right_index',
-        handSide: 'Right',
-        fingerName: 'index',
-        rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.05 },
-      },
-    ],
-    keys
-  );
-  assert.equal(driftResult.notesToTrigger.filter((n) => n.note === 'C#4').length, 0, 'Must NOT trigger black key C#4');
-  assert.equal(driftResult.pressedKeys[0]?.id, 'C4', 'Must remain locked to C4 while pressed');
-
-  // Step 3: Finger completes lift (z reaches release threshold)
-  let liftResult;
-  let releaseEmitted = false;
-  for (let i = 0; i < 3; i++) {
-    liftResult = engine.processFrame(
-      [
-        {
-          id: 'Right_index',
-          handSide: 'Right',
-          fingerName: 'index',
-          rawPosition: { x: blackScreenX, y: blackScreenY, z: -0.01 },
-        },
-      ],
-      keys
-    );
-    if (liftResult.notesToRelease.includes('C4')) {
-      releaseEmitted = true;
-    }
-  }
-  assert.ok(releaseEmitted, 'Must emit C4 release');
-  assert.equal(liftResult!.notesToTrigger.length, 0);
-  assert.equal(liftResult!.pressedKeys.length, 0);
-});
-
-

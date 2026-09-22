@@ -10,6 +10,7 @@ import { PIANO_88_KEYS } from './services/piano/pianoModel.ts';
 import { PianoKeyboard } from './components/PianoKeyboard.tsx';
 import {
   calibrationService,
+  DEFAULT_CALIBRATION,
   type PianoCalibration,
 } from './services/calibration/calibrationService.ts';
 import { CalibrationModal } from './components/CalibrationModal.tsx';
@@ -269,14 +270,24 @@ export const App: React.FC = () => {
             handSide: ft.handSide,
             fingerName: ft.fingerName,
             rawPosition: {
-              x: 1 - ft.smoothedPosition.x, // Mirror horizontally for selfie view
+              x: 1 - ft.rawPosition.x, // Contact detector uses one unlagged landmark stream.
+              y: ft.rawPosition.y,
+              z: ft.rawPosition.z,
+            },
+            displayPosition: {
+              x: 1 - ft.smoothedPosition.x,
               y: ft.smoothedPosition.y,
               z: ft.smoothedPosition.z,
             },
             mcpPosition: {
-              x: 1 - ft.smoothedMcpPosition.x,
-              y: ft.smoothedMcpPosition.y,
-              z: ft.smoothedMcpPosition.z,
+              x: 1 - ft.rawMcpPosition.x,
+              y: ft.rawMcpPosition.y,
+              z: ft.rawMcpPosition.z,
+            },
+            dipPosition: {
+              x: 1 - ft.rawDipPosition.x,
+              y: ft.rawDipPosition.y,
+              z: ft.rawDipPosition.z,
             },
           }));
 
